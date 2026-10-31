@@ -1,0 +1,64 @@
+object Form1: TForm1
+  Left = 0
+  Top = 0
+  Caption = 'Skia Demo'
+  ClientHeight = 720
+  ClientWidth = 420
+  Position = ScreenCenter
+  FormFactor.Width = 420
+  FormFactor.Height = 720
+  FormFactor.Devices = [Desktop, iPhone, iPad]
+  OnCreate = FormCreate
+  DesignerMasterStyle = 0
+  object LayoutTopBar: TLayout
+    Align = Top
+    Size.Width = 420.000000000000000000
+    Size.Height = 52.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object Rectangle1: TRectangle
+      Align = Contents
+      Fill.Color = claBlueviolet
+      Size.Width = 420.000000000000000000
+      Size.Height = 52.000000000000000000
+      Size.PlatformDefault = False
+      object BtnSingleProduct: TButton
+        Align = Left
+        Margins.Left = 8.000000000000000000
+        Margins.Top = 8.000000000000000000
+        Margins.Right = 4.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Position.X = 8.000000000000000000
+        Position.Y = 8.000000000000000000
+        Size.Width = 196.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'Single Product'
+        TextSettings.Trimming = None
+        OnClick = BtnSingleProductClick
+      end
+      object BtnDoubleMerchant: TButton
+        Align = Client
+        Margins.Left = 4.000000000000000000
+        Margins.Top = 8.000000000000000000
+        Margins.Right = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Size.Width = 200.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        Text = 'Double Merchant'
+        TextSettings.Trimming = None
+        OnClick = BtnDoubleMerchantClick
+      end
+    end
+  end
+  object LayoutContainer: TLayout
+    Align = Client
+    Size.Width = 420.000000000000000000
+    Size.Height = 668.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+  end
+end
