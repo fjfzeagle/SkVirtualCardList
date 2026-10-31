@@ -30,6 +30,7 @@ type
     class var FLock: TObject;
     class var FDiskCacheDir: string;
     class var FUnsubscribedOwners: TList<TObject>;
+    class var FFailedUrls: TDictionary<string, UInt64>; // 失败冷却记录表 (防止弱网或404死循环重试)
 
     class constructor Create;
     class destructor Destroy;
@@ -65,6 +66,7 @@ begin
   FActiveDownloads := 0;
   FLock := TObject.Create;
   FUnsubscribedOwners := TList<TObject>.Create;
+  FFailedUrls := TDictionary<string, UInt64>.Create;
 
   FDiskCacheDir := TPath.Combine(TPath.GetCachePath, 'SkiaImgCache');
   if not TDirectory.Exists(FDiskCacheDir) then
@@ -82,6 +84,7 @@ begin
   FCache.Free;
   FLruOrder.Free;
   FUnsubscribedOwners.Free;
+  FFailedUrls.Free;
   FLock.Free;
 end;
 
@@ -137,6 +140,7 @@ begin
   try
     FCache.Clear;
     FLruOrder.Clear;
+    FFailedUrls.Clear;
   finally
     TMonitor.Exit(FLock);
   end;
@@ -172,12 +176,21 @@ class function TSkImageCache.GetImage(const AUrl: string; const AOwner: TObject;
 var
   CbInfo: TCallbackInfo;
   CbList: TList<TCallbackInfo>;
+  LastFailTime: UInt64;
 begin
   Result := nil;
   if AUrl.Trim.IsEmpty then Exit;
 
   TMonitor.Enter(FLock);
   try
+    // 0. 检查失败冷却记录表（20秒内失败过的 URL 暂不重复发起，防止网络风暴）
+    if FFailedUrls.TryGetValue(AUrl, LastFailTime) then
+    begin
+      if TThread.GetTickCount64 - LastFailTime < 20000 then
+        Exit;
+      FFailedUrls.Remove(AUrl);
+    end;
+
     // 1. 检查 L1 内存缓存
     if FCache.TryGetValue(AUrl, Result) then
     begin
@@ -282,7 +295,12 @@ begin
       TMonitor.Enter(FLock);
       try
         if LSkImage <> nil then
+        begin
           PutImage(AUrl, LSkImage);
+          FFailedUrls.Remove(AUrl);
+        end
+        else
+          FFailedUrls.AddOrSetValue(AUrl, TThread.GetTickCount64);
 
         Dec(FActiveDownloads);
         DispatchNextDownload;

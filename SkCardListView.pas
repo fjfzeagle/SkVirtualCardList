@@ -1,5 +1,16 @@
 ﻿unit SkCardListView;
 
+{==============================================================================
+  [Legacy / Prototype Notice - 历史原型归档说明]
+  此单元为项目第一代单体自绘原型验证版本。
+  生产环境与当前项目已全面升级至四层解耦工业级架构：
+    1. 核心虚拟化容器引擎：SkVirtualList.Core.pas (TSkVirtualListView)
+    2. 声明式流式排版 DSL：SkUiDsl.pas (HStack, VStack, Box, Svg, Carousel)
+    3. 业务卡片渲染器策略：SkCardRenderers.Biz.pas
+    4. 异步并发安全图片缓存：SkImageCache.pas
+  本文件仅保留供历史参考与对比基准测试使用。
+==============================================================================}
+
 interface
 
 uses

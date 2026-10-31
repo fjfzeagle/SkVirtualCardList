@@ -2381,6 +2381,10 @@ begin
      (Abs(LayoutCache.Width - W) > 0.5) or
      (Abs(LayoutCache.Height - H) > 0.5) then
   begin
+    // 内存防膨胀容量保护：若缓存树超过 200 项，进行轻量清空重置，内存恒定极低
+    if FCache.Count >= 200 then
+      FCache.Clear;
+
     LayoutCache.Node := BuildLayout(AItem);
     if LayoutCache.Node = nil then Exit;
 

@@ -168,8 +168,8 @@ type
 
     FOnItemClick: TOnVirtualItemEvent;
 
-    FCruiseTimer: TTimer;
-    procedure HandleCruiseTimer(Sender: TObject);
+    FAnimationTimer: TTimer;
+    procedure HandleAnimationTimer(Sender: TObject);
     procedure StartSnapAnimation(AItem: TObject; const AStartOffset, ATargetOffset: Single;
       const AIndexDelta: Integer; const ADurationMs: Single);
     procedure SetEnableAutoCruise(const AValue: Boolean);
@@ -599,15 +599,15 @@ begin
   FAniCalculations.TouchTracking := [ttVertical];
   FAniCalculations.OnChanged := HandleAniChange;
 
-  FCruiseTimer := TTimer.Create(Self);
-  FCruiseTimer.Interval := 20; // 50 FPS 现代动画高精度驱动心跳
-  FCruiseTimer.OnTimer := HandleCruiseTimer;
-  FCruiseTimer.Enabled := True;
+  FAnimationTimer := TTimer.Create(Self);
+  FAnimationTimer.Interval := 20; // 50 FPS 现代动画高精度驱动心跳
+  FAnimationTimer.OnTimer := HandleAnimationTimer;
+  FAnimationTimer.Enabled := True;
 end;
 
 destructor TSkVirtualListView.Destroy;
 begin
-  FCruiseTimer.Free;
+  FAnimationTimer.Free;
   FActiveSnaps.Free;
   TSkImageCache.Unsubscribe(Self);
   FAniCalculations.Free;
@@ -622,8 +622,7 @@ begin
   if FEnableAutoCruise <> AValue then
   begin
     FEnableAutoCruise := AValue;
-    if FCruiseTimer <> nil then
-      FCruiseTimer.Enabled := AValue;
+    FLastAutoCruiseTime := TThread.GetTickCount64;
   end;
 end;
 
@@ -658,7 +657,7 @@ begin
   FActiveSnaps.Add(Anim);
 end;
 
-procedure TSkVirtualListView.HandleCruiseTimer(Sender: TObject);
+procedure TSkVirtualListView.HandleAnimationTimer(Sender: TObject);
 var
   NowTick, SnapElapsed, ScrollElapsed: UInt64;
   CruiseRenderer, ItemRenderer: ISkCardRenderer;
@@ -669,8 +668,6 @@ var
   CruiseItem: TObject;
   ScrollProgress, ScrollEaseT: Single;
 begin
-  if not FEnableAutoCruise then Exit;
-
   NowTick := TThread.GetTickCount64;
 
   // 1. 若当前处于回到顶部平滑回滚动画中，由 20ms 定时器独立高频推进 (260ms Cubic-Ease-Out)
@@ -694,7 +691,7 @@ begin
   if FIsMouseDown then Exit;
   if (Length(FSlots) = 0) or (FItems.Count = 0) then Exit;
 
-  // 1. 若当前存在轮播图平滑缓动动画，由 20ms 定时器逐帧推进各 Item
+  // 2. 若当前存在轮播图平滑缓动动画，由 20ms 定时器逐帧推进各 Item
   if FActiveSnaps.Count > 0 then
   begin
     for I := FActiveSnaps.Count - 1 downto 0 do
@@ -720,8 +717,8 @@ begin
     Exit;
   end;
 
-  // 2. 检查是否触发下一次自动巡航（静止保护 3 秒 + 巡航周期 3.5 秒）
-  if (NowTick - FLastUserActionTime >= 3000) and (NowTick - FLastAutoCruiseTime >= FAutoCruiseIntervalMs) then
+  // 3. 检查是否触发下一次自动巡航（仅在 FEnableAutoCruise 开启时生效：静止保护 3 秒 + 巡航周期 3.5 秒）
+  if FEnableAutoCruise and (NowTick - FLastUserActionTime >= 3000) and (NowTick - FLastAutoCruiseTime >= FAutoCruiseIntervalMs) then
   begin
     HasTriggered := False;
     // 遍历当前落在屏幕可视区域内的所有 Item，分别检测各个 Item 的巡航许可
@@ -1000,7 +997,8 @@ begin
   for I := 0 to High(FSlots) do
   begin
     if FSlots[I].Rect.Bottom < FScrollY then Continue;
-    if FSlots[I].Rect.Top > FScrollY + Height then Break;
+    // 增加 300px 安全冗余缓冲，防止双列不等高瀑布流中某列项因微小交错而被提前 Break 误杀
+    if FSlots[I].Rect.Top > (FScrollY + Height + 300) then Break;
 
     if FSlots[I].Rect.Contains(AbsPt) then
     begin
@@ -1359,7 +1357,8 @@ procedure TSkVirtualListView.MouseWheel(Shift: TShiftState; WheelDelta: Integer;
 begin
   inherited MouseWheel(Shift, WheelDelta, Handled);
   FLastUserActionTime := TThread.GetTickCount64;
-  ScrollByDelta(-WheelDelta * 0.8);
+  // 接入 FAniCalculations 惯性物理模型，实现带平滑阻尼缓动的现代滚轮滚动
+  FAniCalculations.MouseWheel(0, -WheelDelta * 0.6);
   Handled := True;
 end;
 
@@ -1426,7 +1425,8 @@ begin
     for I := 0 to High(FSlots) do
     begin
       if FSlots[I].Rect.Bottom < ViewTop then Continue;
-      if FSlots[I].Rect.Top > ViewBottom then Break;
+      // 增加 300px 安全冗余缓冲，确保双列网格与混排模式下所有可视卡片 100% 完整绘制
+      if FSlots[I].Rect.Top > (ViewBottom + 300) then Break;
 
       CardRect := RectF(
         FSlots[I].Rect.Left,
