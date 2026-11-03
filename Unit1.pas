@@ -7,10 +7,11 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.Layouts,
   FMX.StdCtrls, FMX.DialogService,
   SkVirtualList.Core, SkCardRenderers.Biz, FMX.Controls.Presentation,
-  FMX.Objects;
+  FMX.Objects,
+  Biz.OrderModel, Biz.OrderRenderer;
 
 type
-  TViewMode = (vmProduct, vmMerchant, vmMixed);
+  TViewMode = (vmProduct, vmMerchant, vmMixed, vmOrder);
 
   TForm1 = class(TForm)
     LayoutTopBar: TLayout;
@@ -24,13 +25,16 @@ type
     FListView: TSkVirtualListView;
     FRendererProduct: ISkCardRenderer;
     FRendererMerchant: ISkCardRenderer;
+    FRendererOrder: ISkCardRenderer;
     FCurrentMode: TViewMode;
     BtnToggleCruise: TButton;
 
     procedure LoadProductData;
     procedure LoadMerchantData;
     procedure LoadMixedData;
+    procedure LoadOrderData;
     procedure BtnMixedClick(Sender: TObject);
+    procedure BtnOrderClick(Sender: TObject);
     procedure HandleItemClick(Sender: TObject; AIndex: Integer; AItem: TObject; AZoneID: Integer);
     procedure HandleLoadMore(Sender: TObject);
     procedure HandleRefresh(Sender: TObject);
@@ -115,6 +119,17 @@ begin
   BtnMixed.Text := '混排';
   BtnMixed.OnClick := BtnMixedClick;
 
+  // 动态创建“订单分组”模式切换按钮 (方案 A 复合单据卡片)
+  var BtnOrder := TButton.Create(Self);
+  BtnOrder.Parent := BtnSingleProduct.Parent;
+  BtnOrder.Align := TAlignLayout.Left;
+  BtnOrder.Width := 36;
+  BtnOrder.Margins.Left := 4;
+  BtnOrder.Margins.Top := 8;
+  BtnOrder.Margins.Bottom := 8;
+  BtnOrder.Text := '订单';
+  BtnOrder.OnClick := BtnOrderClick;
+
   // 动态创建并挂载“空状态”测试按钮
   BtnEmptyState := TButton.Create(Self);
   BtnEmptyState.Parent := BtnSingleProduct.Parent;
@@ -140,6 +155,7 @@ begin
   // 1. 初始化各业务卡片渲染器
   FRendererProduct := TSingleProductCardRenderer.Create;
   FRendererMerchant := TDoubleMerchantCardRenderer.Create;
+  FRendererOrder := TOrderCardRenderer.Create;
 
   // 2. 创建并挂载通用虚拟列表引擎
   FListView := TSkVirtualListView.Create(Self);
@@ -147,9 +163,10 @@ begin
   FListView.Align := TAlignLayout.Client;
   FListView.ItemSpacing := 8;
 
-  // 3. 注册多类型数据实体与专属渲染器映射关系 (实现单双列同屏混排)
+  // 3. 注册多类型数据实体与专属渲染器映射关系 (实现单双列同屏混排与单据分组)
   FListView.RegisterRenderer(TProductItem, FRendererProduct);
   FListView.RegisterRenderer(TMerchantItem, FRendererMerchant);
+  FListView.RegisterRenderer(TOrder, FRendererOrder);
 
   LayoutTopBar.BringToFront;
   LayoutContainer.ClipChildren := True;
@@ -227,6 +244,64 @@ begin
       LoadMixedData;
     end);
   end).Start;
+end;
+
+procedure TForm1.BtnOrderClick(Sender: TObject);
+begin
+  FCurrentMode := vmOrder;
+  FListView.Clear;
+  FListView.Renderer := FRendererOrder;
+  FListView.IsLoading := True;
+  FListView.UpdateLayout;
+
+  TThread.CreateAnonymousThread(procedure
+  begin
+    Sleep(300);
+    TThread.Synchronize(nil, procedure
+    begin
+      LoadOrderData;
+    end);
+  end).Start;
+end;
+
+procedure TForm1.LoadOrderData;
+var
+  Order: TOrder;
+begin
+  FListView.Clear;
+  FListView.Renderer := FRendererOrder;
+
+  // 订单 1：2 件高单价商品
+  Order := TOrder.Create('YT202611030001', '2026-11-03 14:20', '待发货');
+  Order.AddDetail('飞天茅台酒53度500ml', ProductImages[0], '官方正品 500ml 单瓶装', 1678.9, 1);
+  Order.AddDetail('五常稻花香大米5kg', ProductImages[4], '2026新米 真空包装', 89.9, 2);
+  FListView.Items.Add(Order);
+
+  // 订单 2：1 件生鲜水果
+  Order := TOrder.Create('YT202611030002', '2026-11-03 15:10', '待付款');
+  Order.AddDetail('云南冰糖橙5斤装', ProductImages[5], '果园现摘 甜润多汁 单箱装', 29.9, 3);
+  FListView.Items.Add(Order);
+
+  // 订单 3：3 件快消食品（展示自适应撑高）
+  Order := TOrder.Create('YT202611030003', '2026-11-03 16:45', '配送中');
+  Order.AddDetail('八宝酱辣肉酱200g', ProductImages[1], '传统风味 浓郁香辣 200g/罐', 27.9, 2);
+  Order.AddDetail('腐皮笋丁荠菜卷400g', ProductImages[2], '速冻保鲜 鲜香爽口 400g/袋', 41.9, 1);
+  Order.AddDetail('百威啤酒330ml×6听', ProductImages[3], '清爽纯正 6听组合装', 69.9, 1);
+  FListView.Items.Add(Order);
+
+  // 订单 4：1 件粮油
+  Order := TOrder.Create('YT202611030004', '2026-11-02 09:30', '已完成');
+  Order.AddDetail('金龙鱼玉米胚芽油5L', ProductImages[6], '非转基因 物理压榨 5L大桶装', 69.9, 1);
+  FListView.Items.Add(Order);
+
+  // 订单 5：2 件饮品
+  Order := TOrder.Create('YT202611030005', '2026-11-01 18:05', '已完成');
+  Order.AddDetail('蒙牛纯牛奶250ml×12盒', ProductImages[7], '优质乳蛋白 整箱特惠装', 55.9, 2);
+  Order.AddDetail('百威啤酒330ml×6听', ProductImages[3], '清爽纯正 6听组合装', 69.9, 2);
+  FListView.Items.Add(Order);
+
+  FListView.IsLoading := False;
+  FListView.UpdateLayout;
 end;
 
 procedure TForm1.HandleEmptyClick(Sender: TObject);
@@ -438,6 +513,8 @@ begin
         LoadProductData
       else if FCurrentMode = vmMerchant then
         LoadMerchantData
+      else if FCurrentMode = vmOrder then
+        LoadOrderData
       else
         LoadMixedData;
       FListView.FinishRefreshing;
@@ -511,6 +588,18 @@ begin
           MerchItem.Rating := Rates[J mod 6];
           MerchItem.ImageUrl := MerchantImages[Random(6)];
           FListView.Items.Add(MerchItem);
+        end;
+      end
+      else if FCurrentMode = vmOrder then
+      begin
+        for J := 1 to 3 do
+        begin
+          var NewOrder := TOrder.Create('YT20261103' + Format('%.4d', [StartIdx + J]), '2026-11-03', '已完成');
+          NewOrder.AddDetail('追加商品 - ' + BaseTitles[(StartIdx + J) mod 8],
+            ProductImages[(StartIdx + J) mod 8], '规格标准版', Prices[(StartIdx + J) mod 8], 1 + (J mod 2));
+          if J mod 2 = 0 then
+            NewOrder.AddDetail('赠品 - 蒙牛纯牛奶250ml', ProductImages[7], '随单赠送', 0.0, 1);
+          FListView.Items.Add(NewOrder);
         end;
       end
       else
@@ -588,6 +677,22 @@ begin
     Merchant := TMerchantItem(AItem);
     TDialogService.ShowMessage('点击商家卡片进入主页: ' + Merchant.Title +
       ' [评分: ' + Format('%.1f', [Merchant.Rating]) + ']');
+  end
+  else if AItem is TOrder then
+  begin
+    var OrderItem := TOrder(AItem);
+    case AZoneID of
+      ZONE_BTN_LOGISTICS:
+        TDialogService.ShowMessage('【物流追踪】订单号：' + OrderItem.OrderId + #13#10 + '顺丰速运火速配送中，请保持电话畅通！');
+      ZONE_BTN_PAY:
+        TDialogService.ShowMessage('【收银台】正在为订单 ' + OrderItem.OrderId + ' 调起支付' + #13#10 +
+          '实付金额：¥' + FormatFloat('0.00', OrderItem.TotalAmount));
+      ZONE_BTN_CANCEL:
+        TDialogService.ShowMessage('【取消订单】订单号：' + OrderItem.OrderId + ' 已申请取消');
+    else
+      TDialogService.ShowMessage('【订单详情】点击进入订单详情卡片：' + OrderItem.OrderId + #13#10 +
+        '包含商品：' + OrderItem.TotalQty.ToString + ' 件，实付：¥' + FormatFloat('0.00', OrderItem.TotalAmount));
+    end;
   end;
 end;
 

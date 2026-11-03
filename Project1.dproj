@@ -5,11 +5,10 @@
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Release</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Platform Condition="'$(Platform)'==''">Android64</Platform>
         <TargetedPlatforms>693395</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>Project1.dpr</MainSource>
-        <ProjectName Condition="'$(ProjectName)'==''">Project1</ProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -311,6 +310,8 @@
         <DCCReference Include="SkVirtualList.Core.pas"/>
         <DCCReference Include="SkUiDsl.pas"/>
         <DCCReference Include="SkCardRenderers.Biz.pas"/>
+        <DCCReference Include="Biz.OrderModel.pas"/>
+        <DCCReference Include="Biz.OrderRenderer.pas"/>
         <DCCReference Include="Unit1.pas">
             <Form>Form1</Form>
             <FormType>fmx</FormType>

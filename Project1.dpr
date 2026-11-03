@@ -8,6 +8,8 @@ uses
   SkVirtualList.Core in 'SkVirtualList.Core.pas',
   SkUiDsl in 'SkUiDsl.pas',
   SkCardRenderers.Biz in 'SkCardRenderers.Biz.pas',
+  Biz.OrderModel in 'Biz.OrderModel.pas',
+  Biz.OrderRenderer in 'Biz.OrderRenderer.pas',
   Unit1 in 'Unit1.pas' {Form1};
 
 {$R *.res}

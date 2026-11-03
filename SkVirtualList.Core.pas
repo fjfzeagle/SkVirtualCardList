@@ -806,11 +806,12 @@ begin
   if (not FIsLoadingMore) and FHasMore and Assigned(FOnLoadMore) then
   begin
     TotalH := GetTotalContentHeight;
-    if (TotalH > Height) and ((FScrollY + Height) >= (TotalH - 80)) then
+    // 【核心修复 2】提前预留 1.2 倍视口高度进行静默拉取，绝不触碰底部的越界回弹物理区
+    if (TotalH > Height) and ((FScrollY + Height) >= (TotalH - (Height * 1.2))) then
     begin
       FIsLoadingMore := True;
       FOnLoadMore(Self);
-      Redraw;
+      // 注意：静默拉取过程中不要触发重排与重绘，保持现有滑动完全匀速
     end;
   end;
 end;
@@ -964,8 +965,7 @@ begin
 
   // 2. 精确计算总体内容高度
   FTotalContentHeight := Max(ColBottomY[0], ColBottomY[1]);
-  if FIsLoadingMore then
-    FTotalContentHeight := FTotalContentHeight + 38;
+  // 【核心修复 3】坚决移除高度临时突变，保持总高度单调递增，彻底杜绝 SetTargets 纠偏反弹抖动
 
   // 3. 更新惯性滚动 Targets 边界
   Targets[0].TargetType := TAniCalculations.TTargetType.Min;
@@ -1026,6 +1026,17 @@ begin
   inherited MouseDown(Button, Shift, X, Y);
   if Button = TMouseButton.mbLeft then
   begin
+    // 【核心修复 1】即按即停：通过重置动力学计算引擎立即刹车并将速度向量清零
+    if FAniCalculations <> nil then
+    begin
+      FAniCalculations.Animation := False;
+      FAniCalculations.Animation := True;
+    end;
+
+    // 终止回顶平滑微动画与轮播图吸附缓动队列
+    FIsScrollingToTop := False;
+    FActiveSnaps.Clear;
+
     // 1. 优先拦截点击回到顶部悬浮按钮 (只要滚动超过 180px 且在按钮区域内，100% 立即响应)
     if (FScrollY > 180) and GetBackToTopRect.Contains(PointF(X, Y)) then
     begin
@@ -1044,7 +1055,6 @@ begin
     FTouchMode := tmDeciding;
     FActiveSwipeItem := nil;
     FSwipeImgWidth := 0;
-    FIsScrollingToTop := False;
     FLastUserActionTime := TThread.GetTickCount64;
     Capture;
 

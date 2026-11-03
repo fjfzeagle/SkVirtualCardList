@@ -99,6 +99,7 @@ type
     function AlignStart: TVStack;
     function AlignEnd: TVStack;
     function AlignStretch: TVStack;
+    function Child(const ANode: IUiNode): TVStack;
     function Children(const AList: array of IUiNode): TVStack;
     function Flex(const AVal: Single): TVStack;
     function OnClick(const AZoneID: Integer): TVStack;
@@ -350,6 +351,7 @@ type
     function Radius(const ARadius: Single): TBadgeNode;
     function FontSize(const ASize: Single): TBadgeNode;
     function Padding(const H, V: Single): TBadgeNode;
+    function OnClick(const AZoneID: Integer): TBadgeNode;
 
     function Measure(AContext: TSkRenderContext; AMaxWidth, AMaxHeight: Single): TSizeF; override;
     procedure Draw(const ACanvas: ISkCanvas; AContext: TSkRenderContext); override;
@@ -880,6 +882,13 @@ end;
 function TVStack.AlignStretch: TVStack;
 begin
   FAlignItems := alStretch;
+  Result := Self;
+end;
+
+function TVStack.Child(const ANode: IUiNode): TVStack;
+begin
+  if ANode <> nil then
+    FChildren.Add(ANode);
   Result := Self;
 end;
 
@@ -2286,6 +2295,12 @@ function TBadgeNode.Padding(const H, V: Single): TBadgeNode;
 begin
   FPaddingH := H;
   FPaddingV := V;
+  Result := Self;
+end;
+
+function TBadgeNode.OnClick(const AZoneID: Integer): TBadgeNode;
+begin
+  FZoneID := AZoneID;
   Result := Self;
 end;
 
