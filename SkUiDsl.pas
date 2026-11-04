@@ -7,6 +7,20 @@ uses
   System.Generics.Collections, System.Skia,
   SkImageCache, SkVirtualList.Core;
 
+const
+  // =========================================================================
+  // 设计系统字阶规范 (Typography Tokens)
+  // =========================================================================
+  FONT_SIZE_HERO_PRICE   = 18.0; // 超大促销价格 (如微信小店核心金额)
+  FONT_SIZE_PRICE        = 15.0; // 标准卡片主价格
+  FONT_SIZE_TITLE_LG     = 14.5; // 一级突出标题
+  FONT_SIZE_TITLE        = 13.5; // 标准商品/单据卡片标题 (最多 2 行)
+  FONT_SIZE_BODY         = 12.0; // 标准正文 / 单号 / 规格参数
+  FONT_SIZE_SUB          = 11.0; // 副标题 / 下单时间 / 营销标签
+  FONT_SIZE_CAPTION      = 10.0; // 辅助说明 / 销量 / 货币符号 '¥'
+  FONT_SIZE_BADGE        = 9.5;  // 微型胶囊标签 / 极小徽章
+  FONT_SIZE_TINY         = 8.5;  // 极小标签 / 紧凑横幅
+
 type
   TUiAlignment = (alLeading, alCenter, alTrailing, alStretch);
   TUiJustify = (juStart, juCenter, juEnd, juBetween);
@@ -181,6 +195,12 @@ type
     function MaxLines(const AVal: Integer): TTextNode;
     function Wrap(const AVal: Boolean = True): TTextNode;
     function Flex(const AVal: Single): TTextNode;
+    function AsTitle: TTextNode;
+    function AsPrice: TTextNode;
+    function AsBody: TTextNode;
+    function AsSub: TTextNode;
+    function AsCaption: TTextNode;
+    function AsBadge: TTextNode;
 
     property IsWrap: Boolean read FWrap;
 
@@ -1361,6 +1381,43 @@ begin
   Result := Self;
 end;
 
+function TTextNode.AsTitle: TTextNode;
+begin
+  FFontSize := FONT_SIZE_TITLE;
+  Result := Self;
+end;
+
+function TTextNode.AsPrice: TTextNode;
+begin
+  FFontSize := FONT_SIZE_PRICE;
+  FBold := True;
+  Result := Self;
+end;
+
+function TTextNode.AsBody: TTextNode;
+begin
+  FFontSize := FONT_SIZE_BODY;
+  Result := Self;
+end;
+
+function TTextNode.AsSub: TTextNode;
+begin
+  FFontSize := FONT_SIZE_SUB;
+  Result := Self;
+end;
+
+function TTextNode.AsCaption: TTextNode;
+begin
+  FFontSize := FONT_SIZE_CAPTION;
+  Result := Self;
+end;
+
+function TTextNode.AsBadge: TTextNode;
+begin
+  FFontSize := FONT_SIZE_BADGE;
+  Result := Self;
+end;
+
 function TTextNode.Color(const AColor: TAlphaColor): TTextNode;
 begin
   FColor := AColor;
@@ -2396,10 +2453,6 @@ begin
      (Abs(LayoutCache.Width - W) > 0.5) or
      (Abs(LayoutCache.Height - H) > 0.5) then
   begin
-    // 内存防膨胀容量保护：若缓存树超过 200 项，进行轻量清空重置，内存恒定极低
-    if FCache.Count >= 200 then
-      FCache.Clear;
-
     LayoutCache.Node := BuildLayout(AItem);
     if LayoutCache.Node = nil then Exit;
 
