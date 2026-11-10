@@ -10,6 +10,14 @@ uses
 type
   TImageLoadedProc = reference to procedure;
 
+  // 图片加载生命周期状态
+  TSkImageState = (
+    isNone,     // 未请求 / 空 URL
+    isLoading,  // 正在下载 / 排队中 (脉冲占位)
+    isSuccess,  // 成功加载 / 缓存命中
+    isFailed    // 下载失败 / 离线 / 冷却中 (兜底回退)
+  );
+
   // 具备 LRU 淘汰、本地磁盘持久化、请求合并、并发限流与生命周期安全的图片缓存管理器
   TSkImageCache = class
   public const
@@ -41,10 +49,17 @@ type
     class procedure InternalDownloadUrl(const AUrl: string);
     class procedure NotifyLoaded(const AUrl: string);
   public
+    // 获取图片并返回当前生命周期状态 (isNone / isLoading / isSuccess / isFailed)
+    class function GetImageEx(const AUrl: string; const AOwner: TObject;
+      const AOnLoaded: TImageLoadedProc; out AState: TSkImageState): ISkImage;
     // 获取图片：若命中内存直接返回；未命中则异步拉取并通知 AOnLoaded
     // AOwner 可传入请求者组件（如 TSkVirtualListView 实例），用于注销生命周期
     class function GetImage(const AUrl: string; const AOwner: TObject;
       const AOnLoaded: TImageLoadedProc): ISkImage;
+    // 重试下载指定的 URL（清除失败冷却标记与本地脏文件）
+    class procedure RetryUrl(const AUrl: string);
+    // 查询当前是否有正在进行的网络下载或排队任务（用于驱动占位脉冲动效）
+    class function HasActiveDownloads: Boolean;
     // 当组件销毁时调用，安全清理待触发的回调，防止访问已释放的内存
     class procedure Unsubscribe(const AOwner: TObject);
     // 清空内存缓存
@@ -174,11 +189,20 @@ end;
 class function TSkImageCache.GetImage(const AUrl: string; const AOwner: TObject;
   const AOnLoaded: TImageLoadedProc): ISkImage;
 var
+  LState: TSkImageState;
+begin
+  Result := GetImageEx(AUrl, AOwner, AOnLoaded, LState);
+end;
+
+class function TSkImageCache.GetImageEx(const AUrl: string; const AOwner: TObject;
+  const AOnLoaded: TImageLoadedProc; out AState: TSkImageState): ISkImage;
+var
   CbInfo: TCallbackInfo;
   CbList: TList<TCallbackInfo>;
   LastFailTime: UInt64;
 begin
   Result := nil;
+  AState := isNone;
   if AUrl.Trim.IsEmpty then Exit;
 
   TMonitor.Enter(FLock);
@@ -187,7 +211,10 @@ begin
     if FFailedUrls.TryGetValue(AUrl, LastFailTime) then
     begin
       if TThread.GetTickCount64 - LastFailTime < 20000 then
+      begin
+        AState := isFailed;
         Exit;
+      end;
       FFailedUrls.Remove(AUrl);
     end;
 
@@ -195,10 +222,12 @@ begin
     if FCache.TryGetValue(AUrl, Result) then
     begin
       TouchLRU(AUrl);
+      AState := isSuccess;
       Exit;
     end;
 
     // 2. 未命中，记录回调订阅
+    AState := isLoading;
     CbInfo.Owner := AOwner;
     CbInfo.Proc := AOnLoaded;
 
@@ -218,6 +247,38 @@ begin
     // 3. 加入下载调度队列
     FWaitingQueue.Add(AUrl);
     DispatchNextDownload;
+  finally
+    TMonitor.Exit(FLock);
+  end;
+end;
+
+class procedure TSkImageCache.RetryUrl(const AUrl: string);
+var
+  DiskFile: string;
+begin
+  if AUrl.Trim.IsEmpty then Exit;
+  TMonitor.Enter(FLock);
+  try
+    FFailedUrls.Remove(AUrl);
+  finally
+    TMonitor.Exit(FLock);
+  end;
+
+  DiskFile := GetDiskCacheFilePath(AUrl);
+  if TFile.Exists(DiskFile) then
+  begin
+    try
+      TFile.Delete(DiskFile);
+    except
+    end;
+  end;
+end;
+
+class function TSkImageCache.HasActiveDownloads: Boolean;
+begin
+  TMonitor.Enter(FLock);
+  try
+    Result := (FActiveDownloads > 0) or (FWaitingQueue.Count > 0);
   finally
     TMonitor.Exit(FLock);
   end;

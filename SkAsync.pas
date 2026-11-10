@@ -1,4 +1,4 @@
-unit SkAsync;
+﻿unit SkAsync;
 
 {==============================================================================
   SkAsync - 基于 Delphi 原生 System.Threading 的轻量级流式异步执行器

@@ -1,15 +1,15 @@
-unit Unit1;
+﻿unit Unit1;
 
 interface
 
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
-  System.Generics.Collections,
+  System.Generics.Collections, System.Math,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.Layouts,
   FMX.StdCtrls, FMX.DialogService,
   SkVirtualList.Core, SkCardRenderers.Biz, FMX.Controls.Presentation,
   FMX.Objects,
-  Biz.OrderModel, Biz.OrderRenderer, SkAsync;
+  Biz.OrderModel, Biz.OrderRenderer, SkAsync, SkImageCache;
 
 type
   TViewMode = (vmProduct, vmMerchant, vmMixed, vmOrder);
@@ -30,6 +30,8 @@ type
     FCurrentMode: TViewMode;
     BtnToggleCruise: TButton;
     BtnSimulateError: TButton;
+    BtnTestPartial: TButton;
+    BtnTestBadImage: TButton;
     FSimulateError: Boolean;
 
     procedure LoadProductData;
@@ -43,6 +45,8 @@ type
     procedure HandleEmptyClick(Sender: TObject);
     procedure HandleToggleCruiseClick(Sender: TObject);
     procedure HandleToggleErrorClick(Sender: TObject);
+    procedure HandlePartialUpdateClick(Sender: TObject);
+    procedure HandleBadImageClick(Sender: TObject);
   public
     procedure MouseWheel(Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean); override;
   end;
@@ -166,6 +170,28 @@ begin
   BtnSimulateError.Margins.Bottom := 8;
   BtnSimulateError.Text := '故障:关';
   BtnSimulateError.OnClick := HandleToggleErrorClick;
+
+  // 动态创建并挂载“局部刷新”测试按钮（等高 O(1) 原地刷新）
+  BtnTestPartial := TButton.Create(Self);
+  BtnTestPartial.Parent := BtnSingleProduct.Parent;
+  BtnTestPartial.Align := TAlignLayout.Right;
+  BtnTestPartial.Width := 68;
+  BtnTestPartial.Margins.Right := 4;
+  BtnTestPartial.Margins.Top := 8;
+  BtnTestPartial.Margins.Bottom := 8;
+  BtnTestPartial.Text := '局部改价';
+  BtnTestPartial.OnClick := HandlePartialUpdateClick;
+
+  // 动态创建并挂载“坏图兜底”测试按钮（离线脉冲与失败回退测试）
+  BtnTestBadImage := TButton.Create(Self);
+  BtnTestBadImage.Parent := BtnSingleProduct.Parent;
+  BtnTestBadImage.Align := TAlignLayout.Right;
+  BtnTestBadImage.Width := 68;
+  BtnTestBadImage.Margins.Right := 4;
+  BtnTestBadImage.Margins.Top := 8;
+  BtnTestBadImage.Margins.Bottom := 8;
+  BtnTestBadImage.Text := '坏图测试';
+  BtnTestBadImage.OnClick := HandleBadImageClick;
 
   // 1. 初始化各业务卡片渲染器
   FRendererProduct := TSingleProductCardRenderer.Create;
@@ -343,6 +369,45 @@ begin
     BtnSimulateError.Text := '故障:开'
   else
     BtnSimulateError.Text := '故障:关';
+end;
+
+procedure TForm1.HandlePartialUpdateClick(Sender: TObject);
+var
+  TargetItem: TObject;
+  Prod: TProductItem;
+begin
+  if FListView.Items.Count = 0 then Exit;
+  // 选取第 1 个单品进行等高属性变动
+  TargetItem := FListView.Items[0];
+  if TargetItem is TProductItem then
+  begin
+    Prod := TProductItem(TargetItem);
+    Prod.Price := Max(1.0, Prod.Price - 10.0);
+    Prod.Title := '【热销点赞+1】' + BaseTitles[0];
+    Prod.TagTop := '降价特惠';
+    // O(1) 等高局部刷新：不重排布局，原地零闪烁重绘
+    FListView.NotifyItemChanged(0, False);
+  end;
+end;
+
+procedure TForm1.HandleBadImageClick(Sender: TObject);
+var
+  TargetItem: TObject;
+  Prod: TProductItem;
+begin
+  if FListView.Items.Count < 2 then Exit;
+  // 选取第 2 个商品卡片，注入 404 失效图片地址
+  TargetItem := FListView.Items[1];
+  if TargetItem is TProductItem then
+  begin
+    Prod := TProductItem(TargetItem);
+    Prod.ImageUrl := 'https://trae-api-cn.mchost.guru/404_invalid_image.jpg';
+    Prod.Images := ['https://trae-api-cn.mchost.guru/404_invalid_image.jpg'];
+    // 清理可能存在的历史缓存
+    TSkImageCache.RetryUrl(Prod.ImageUrl);
+    // 触发局部重绘：卡片将展现加载中脉冲动效，并随后回退到失败兜底图
+    FListView.NotifyItemChanged(1, False);
+  end;
 end;
 
 procedure TForm1.LoadProductData;
@@ -703,6 +768,12 @@ begin
     end
     else if AZoneID = ZONE_IMAGE_CAROUSEL then
     begin
+      // 若当前图片包含 404 或失效，触发重试下载并无感刷新
+      if Product.ImageUrl.Contains('404') then
+      begin
+        TSkImageCache.RetryUrl(Product.ImageUrl);
+        FListView.NotifyItemChanged(AIndex, False);
+      end;
       TDialogService.ShowMessage('点击了商品多图轮播画廊: ' + Product.Title +
         Format(' (当前显示第 %d/3 张图，可直接在图片上左右划动切换)', [Product.ActiveImageIndex + 1]));
     end

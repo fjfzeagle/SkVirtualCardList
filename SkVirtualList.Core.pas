@@ -28,6 +28,7 @@ type
     // SVG 路径解析缓存
     FSvgCache: TDictionary<string, ISkPath>;
     FOnNeedRedraw: TProc;
+    FShimmerPhase: Single;
 
     procedure InitTypefaces;
   public
@@ -62,6 +63,7 @@ type
       const ADestRect: TRectF; const AColor: TAlphaColor);
 
     property OnNeedRedraw: TProc read FOnNeedRedraw write FOnNeedRedraw;
+    property ShimmerPhase: Single read FShimmerPhase write FShimmerPhase;
   end;
 
   // 渲染器策略契约接口：解耦业务外观、几何尺寸、命中测试与滚动引擎
@@ -153,6 +155,7 @@ type
     FAutoCruiseIntervalMs: Cardinal;
     FLastUserActionTime: UInt64;
     FLastAutoCruiseTime: UInt64;
+    FLastShimmerRedrawTime: UInt64;
 
     // 上拉加载更多与分页控制器
     FOnLoadMore: TNotifyEvent;
@@ -178,6 +181,13 @@ type
     FOnItemClick: TOnVirtualItemEvent;
 
     FAnimationTimer: TTimer;
+    // 瀑布流与多列分栏排版记忆状态（支撑增量追加与局部重排）
+    FColBottomY: array[0..1] of Single;
+    FColX: array[0..1] of Single;
+    FColWidth: Single;
+
+    procedure LayoutSlots(const AStartIdx, AEndIdx: Integer);
+    procedure UpdateScrollTargets;
     procedure HandleAnimationTimer(Sender: TObject);
     procedure StartSnapAnimation(AItem: TObject; const AStartOffset, ATargetOffset: Single;
       const AIndexDelta: Integer; const ADurationMs: Single);
@@ -205,6 +215,11 @@ type
     function GetRendererForItem(AItem: TObject): ISkCardRenderer;
     procedure MouseWheel(Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean); override;
     procedure UpdateLayout;
+    // 局部更新与增量排版核心接口 (Partial Refresh)
+    procedure NotifyItemChanged(const AIndex: Integer; const AHeightChanged: Boolean = False); overload;
+    procedure NotifyItemChanged(const AItem: TObject; const AHeightChanged: Boolean = False); overload;
+    procedure NotifyItemRangeChanged(const AStartIndex, ACount: Integer; const AHeightChanged: Boolean = False);
+    procedure NotifyItemsAppended(const ANewCount: Integer);
     procedure Clear;
     procedure ScrollToTop;
     procedure SmoothScrollToTop;
@@ -767,6 +782,13 @@ begin
       Redraw;
     end;
   end;
+
+  // 4. 若当前有后台网络图片处于活跃下载/排队中，推进脉冲扫光重绘 (每 40ms 刷新一帧，兼顾流畅度与极致省电)
+  if TSkImageCache.HasActiveDownloads and (NowTick - FLastShimmerRedrawTime >= 40) then
+  begin
+    FLastShimmerRedrawTime := NowTick;
+    Redraw;
+  end;
 end;
 
 function TSkVirtualListView.GetBackToTopRect: TRectF;
@@ -926,6 +948,7 @@ begin
       FPageIndex := 1;
     FHasMore := AHasMore;
     FinishRefreshing;
+    UpdateLayout;
   end
   else if FIsLoadingMore then
   begin
@@ -933,55 +956,63 @@ begin
       FPageIndex := FTargetPageIndex;
     FHasMore := AHasMore;
     FIsLoadingMore := False;
+    UpdateLayout;
   end
   else
   begin
     FHasMore := AHasMore;
+    UpdateLayout;
   end;
-  UpdateLayout;
 end;
 
 procedure TSkVirtualListView.FinishFetch(const ANewItemsCount: Integer; const ASuccess: Boolean);
 begin
-  FinishFetch(ASuccess, ANewItemsCount >= FPageSize);
+  if FIsRefreshing then
+  begin
+    if ASuccess then
+      FPageIndex := 1;
+    FHasMore := (ANewItemsCount >= FPageSize);
+    FinishRefreshing;
+    UpdateLayout;
+  end
+  else if FIsLoadingMore then
+  begin
+    if ASuccess then
+      FPageIndex := FTargetPageIndex;
+    FHasMore := (ANewItemsCount >= FPageSize);
+    FIsLoadingMore := False;
+    if ASuccess and (ANewItemsCount > 0) then
+      NotifyItemsAppended(ANewItemsCount) // 增量追加，跳过历史卡片排版
+    else
+      UpdateLayout;
+  end
+  else
+  begin
+    FHasMore := (ANewItemsCount >= FPageSize);
+    UpdateLayout;
+  end;
 end;
 
-procedure TSkVirtualListView.UpdateLayout;
+procedure TSkVirtualListView.UpdateScrollTargets;
 var
-  I, SpanCount: Integer;
-  ColWidth, ItemH, CurY: Single;
-  ColX: array of Single;
-  ColBottomY: array of Single;
-  CurCol, C: Integer;
-  TotalCols: Integer;
-  ItemRenderer: ISkCardRenderer;
   Targets: array[0..1] of TAniCalculations.TTarget;
 begin
-  SetLength(FSlots, FItems.Count);
-  if FItems.Count = 0 then
-  begin
-    FTotalContentHeight := 0;
-    Targets[0].TargetType := TAniCalculations.TTargetType.Min;
-    Targets[0].Point := TPointD.Create(0, 0);
-    Targets[1].TargetType := TAniCalculations.TTargetType.Max;
-    Targets[1].Point := TPointD.Create(0, 0);
-    FAniCalculations.SetTargets(Targets);
-    Redraw;
-    Exit;
-  end;
+  Targets[0].TargetType := TAniCalculations.TTargetType.Min;
+  Targets[0].Point := TPointD.Create(0, 0);
+  Targets[1].TargetType := TAniCalculations.TTargetType.Max;
+  Targets[1].Point := TPointD.Create(0, Max(0, GetTotalContentHeight - Height));
+  FAniCalculations.SetTargets(Targets);
+end;
 
-  // 1. 基准列宽与多列定位计算（以 2 列作为网格基准分栏）
-  TotalCols := 2;
-  SetLength(ColX, TotalCols);
-  SetLength(ColBottomY, TotalCols);
-  ColWidth := Max(10, (Width - (FItemSpacing * (TotalCols + 1))) / TotalCols);
-  for C := 0 to TotalCols - 1 do
-  begin
-    ColX[C] := FItemSpacing + C * (ColWidth + FItemSpacing);
-    ColBottomY[C] := FItemSpacing;
-  end;
+procedure TSkVirtualListView.LayoutSlots(const AStartIdx, AEndIdx: Integer);
+var
+  I, SpanCount, CurCol: Integer;
+  ItemRenderer: ISkCardRenderer;
+  ItemH, CurY: Single;
+begin
+  if (AStartIdx < 0) or (AStartIdx > AEndIdx) or (AEndIdx >= FItems.Count) then Exit;
 
-  for I := 0 to FItems.Count - 1 do
+  for I := AStartIdx to AEndIdx do
   begin
     ItemRenderer := GetRendererForItem(FItems[I]);
     FSlots[I].Renderer := ItemRenderer;
@@ -996,42 +1027,151 @@ begin
     if SpanCount <= 1 then
     begin
       // --- 单列全宽项 (SpanCount = 1) ---
-      // 对齐到两列当前最大 Y
-      CurY := Max(ColBottomY[0], ColBottomY[1]);
-
+      CurY := Max(FColBottomY[0], FColBottomY[1]);
       ItemH := ItemRenderer.GetItemHeight(FContext, Width - (FItemSpacing * 2), FItems[I]);
       FSlots[I].Rect := RectF(FItemSpacing, CurY, Width - FItemSpacing, CurY + ItemH);
       CurY := CurY + ItemH + FItemSpacing;
 
-      // 统一拉齐多列底线
-      ColBottomY[0] := CurY;
-      ColBottomY[1] := CurY;
+      FColBottomY[0] := CurY;
+      FColBottomY[1] := CurY;
     end
     else
     begin
       // --- 双列网格瀑布流 (SpanCount >= 2) - 贪心选取当前最短列 ---
-      if ColBottomY[0] <= ColBottomY[1] then
+      if FColBottomY[0] <= FColBottomY[1] then
         CurCol := 0
       else
         CurCol := 1;
 
-      ItemH := ItemRenderer.GetItemHeight(FContext, ColWidth, FItems[I]);
-      FSlots[I].Rect := RectF(ColX[CurCol], ColBottomY[CurCol], ColX[CurCol] + ColWidth, ColBottomY[CurCol] + ItemH);
-      ColBottomY[CurCol] := ColBottomY[CurCol] + ItemH + FItemSpacing;
+      ItemH := ItemRenderer.GetItemHeight(FContext, FColWidth, FItems[I]);
+      FSlots[I].Rect := RectF(FColX[CurCol], FColBottomY[CurCol], FColX[CurCol] + FColWidth, FColBottomY[CurCol] + ItemH);
+      FColBottomY[CurCol] := FColBottomY[CurCol] + ItemH + FItemSpacing;
     end;
   end;
 
-  // 2. 精确计算总体内容高度
-  FTotalContentHeight := Max(ColBottomY[0], ColBottomY[1]);
-  // 【核心修复 3】坚决移除高度临时突变，保持总高度单调递增，彻底杜绝 SetTargets 纠偏反弹抖动
+  FTotalContentHeight := Max(FColBottomY[0], FColBottomY[1]);
+end;
 
-  // 3. 更新惯性滚动 Targets 边界
-  Targets[0].TargetType := TAniCalculations.TTargetType.Min;
-  Targets[0].Point := TPointD.Create(0, 0);
-  Targets[1].TargetType := TAniCalculations.TTargetType.Max;
-  Targets[1].Point := TPointD.Create(0, Max(0, FTotalContentHeight - Height));
-  FAniCalculations.SetTargets(Targets);
+procedure TSkVirtualListView.UpdateLayout;
+var
+  TotalCols, C: Integer;
+begin
+  SetLength(FSlots, FItems.Count);
+  if FItems.Count = 0 then
+  begin
+    FTotalContentHeight := 0;
+    FColBottomY[0] := 0;
+    FColBottomY[1] := 0;
+    UpdateScrollTargets;
+    Redraw;
+    Exit;
+  end;
+
+  TotalCols := 2;
+  FColWidth := Max(10, (Width - (FItemSpacing * (TotalCols + 1))) / TotalCols);
+  for C := 0 to TotalCols - 1 do
+  begin
+    FColX[C] := FItemSpacing + C * (FColWidth + FItemSpacing);
+    FColBottomY[C] := FItemSpacing;
+  end;
+
+  LayoutSlots(0, FItems.Count - 1);
+  UpdateScrollTargets;
   Redraw;
+end;
+
+procedure TSkVirtualListView.NotifyItemsAppended(const ANewCount: Integer);
+var
+  OldCount: Integer;
+begin
+  if ANewCount <= 0 then Exit;
+  OldCount := Length(FSlots);
+
+  // 若之前无插槽或列宽尚未初始化，直接全量 UpdateLayout
+  if (OldCount = 0) or (FColWidth <= 0) then
+  begin
+    UpdateLayout;
+    Exit;
+  end;
+
+  // 增量扩充插槽数组大小
+  SetLength(FSlots, FItems.Count);
+
+  // 仅计算新增项的插槽位置，继承并推进已有列底
+  LayoutSlots(OldCount, FItems.Count - 1);
+  UpdateScrollTargets;
+  Redraw;
+end;
+
+procedure TSkVirtualListView.NotifyItemChanged(const AIndex: Integer; const AHeightChanged: Boolean);
+var
+  ItemRenderer: ISkCardRenderer;
+  OldH, NewH, DeltaH: Single;
+  I: Integer;
+begin
+  if (AIndex < 0) or (AIndex >= Length(FSlots)) or (AIndex >= FItems.Count) then Exit;
+
+  if not AHeightChanged then
+  begin
+    // 等高变更 (如点赞、价格、库存等文本微调)：几何尺寸绝对不变，0 计算开销原地重绘
+    Redraw;
+    Exit;
+  end;
+
+  ItemRenderer := GetRendererForItem(FItems[AIndex]);
+  if ItemRenderer = nil then Exit;
+
+  OldH := FSlots[AIndex].Rect.Height;
+  if ItemRenderer.GetSpanCount <= 1 then
+    NewH := ItemRenderer.GetItemHeight(FContext, Width - (FItemSpacing * 2), FItems[AIndex])
+  else
+    NewH := ItemRenderer.GetItemHeight(FContext, FColWidth, FItems[AIndex]);
+
+  DeltaH := NewH - OldH;
+  if Abs(DeltaH) < 0.5 then
+  begin
+    Redraw;
+    Exit;
+  end;
+
+  if ItemRenderer.GetSpanCount <= 1 then
+  begin
+    // 单列全宽项变高：自受影响项向后整体平移 DeltaH
+    FSlots[AIndex].Rect.Bottom := FSlots[AIndex].Rect.Top + NewH;
+    for I := AIndex + 1 to High(FSlots) do
+    begin
+      FSlots[I].Rect.Top := FSlots[I].Rect.Top + DeltaH;
+      FSlots[I].Rect.Bottom := FSlots[I].Rect.Bottom + DeltaH;
+    end;
+    FTotalContentHeight := FTotalContentHeight + DeltaH;
+    FColBottomY[0] := FColBottomY[0] + DeltaH;
+    FColBottomY[1] := FColBottomY[1] + DeltaH;
+    UpdateScrollTargets;
+    Redraw;
+  end
+  else
+  begin
+    // 双列网格瀑布流变高：触发整表重排
+    UpdateLayout;
+  end;
+end;
+
+procedure TSkVirtualListView.NotifyItemChanged(const AItem: TObject; const AHeightChanged: Boolean);
+var
+  Idx: Integer;
+begin
+  if AItem = nil then Exit;
+  Idx := FItems.IndexOf(AItem);
+  if Idx >= 0 then
+    NotifyItemChanged(Idx, AHeightChanged);
+end;
+
+procedure TSkVirtualListView.NotifyItemRangeChanged(const AStartIndex, ACount: Integer; const AHeightChanged: Boolean);
+begin
+  if not AHeightChanged then
+    Redraw
+  else
+    UpdateLayout;
 end;
 
 procedure TSkVirtualListView.Resize;
@@ -1450,6 +1590,7 @@ begin
   ACanvas.Save;
   try
     ACanvas.ClipRect(ADest);
+    FContext.ShimmerPhase := ((TThread.GetTickCount64 mod 1200) / 1200.0);
 
     // 1. 绘制顶部“下拉刷新”自绘提示
     if (FScrollY < 0) or FIsRefreshing then

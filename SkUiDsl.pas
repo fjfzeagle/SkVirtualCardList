@@ -425,6 +425,84 @@ function SplitTextLines(const AText: string; const AFont: ISkFont; const AMaxWid
 
 implementation
 
+procedure DrawImagePlaceholderOrFallback(const ACanvas: ISkCanvas; AContext: TSkRenderContext;
+  const ARect: TRectF; const AState: TSkImageState; const APlaceholderColor: TAlphaColor);
+var
+  ScanX, BandW, Phase: Single;
+  Shader: ISkShader;
+  ShimmerPaint, IconPaint: ISkPaint;
+  BoxW, BoxH, BoxL, BoxT: Single;
+  BoxRect: TRectF;
+  LFont: ISkFont;
+  TextW, Baseline: Single;
+begin
+  if (ARect.Width <= 0) or (ARect.Height <= 0) then Exit;
+
+  if AState = isFailed then
+  begin
+    // 1. 失败态 (isFailed)：浅灰柔和底板 + 矢量破损相框/警告图标 + 提示
+    ACanvas.DrawRect(ARect, AContext.FillPaint($FFF2F3F5));
+
+    // 计算中心图标大小与位置
+    BoxW := Min(34.0, ARect.Width * 0.45);
+    BoxH := BoxW * 0.76;
+    BoxL := ARect.Left + (ARect.Width - BoxW) / 2;
+    if ARect.Height > 65 then
+      BoxT := ARect.Top + (ARect.Height - BoxH) / 2 - 7
+    else
+      BoxT := ARect.Top + (ARect.Height - BoxH) / 2;
+    BoxRect := RectF(BoxL, BoxT, BoxL + BoxW, BoxT + BoxH);
+
+    // 绘制浅灰色相框边框
+    IconPaint := AContext.StrokePaint($FFCBD0D8, 1.5);
+    ACanvas.DrawRoundRect(TSkRoundRect.Create(BoxRect, 3, 3), IconPaint);
+
+    // 绘制破损断网斜线与警告小圆点
+    ACanvas.DrawLine(PointF(BoxRect.Left + 5, BoxRect.Bottom - 4), PointF(BoxRect.Right - 5, BoxRect.Top + 4), IconPaint);
+    ACanvas.DrawCircle(PointF(BoxRect.Right - 7, BoxRect.Top + 6), 1.8, AContext.FillPaint($FF9AA0A6));
+
+    // 区域高度充足时呈现重试小字
+    if ARect.Height > 65 then
+    begin
+      LFont := AContext.Font(9.0, False);
+      TextW := LFont.MeasureText('点击重试');
+      Baseline := BoxRect.Bottom + 12;
+      ACanvas.DrawSimpleText('点击重试', ARect.Left + (ARect.Width - TextW) / 2, Baseline, LFont, AContext.FillPaint($FF9AA0A6));
+    end;
+  end
+  else if AState = isLoading then
+  begin
+    // 2. 加载中 (isLoading)：基于统一 Shimmer 相位的线性渐变脉冲扫光
+    Phase := 0.0;
+    if AContext <> nil then
+      Phase := AContext.ShimmerPhase;
+
+    BandW := Max(40.0, ARect.Width * 0.55);
+    ScanX := (ARect.Left - BandW) + (ARect.Width + BandW * 2) * Phase;
+
+    Shader := TSkShader.MakeGradientLinear(
+      PointF(ScanX - BandW, ARect.Top),
+      PointF(ScanX + BandW, ARect.Top),
+      [$FFF0F2F5, $FFFDFEFF, $FFF0F2F5],
+      [0.0, 0.5, 1.0],
+      TSkTileMode.Clamp
+    );
+
+    ShimmerPaint := AContext.FillPaint($FFFFFFFF);
+    ShimmerPaint.Shader := Shader;
+    try
+      ACanvas.DrawRect(ARect, ShimmerPaint);
+    finally
+      ShimmerPaint.Shader := nil;
+    end;
+  end
+  else
+  begin
+    // 3. 空 URL 或无状态：使用基底单色填充
+    ACanvas.DrawRect(ARect, AContext.FillPaint(APlaceholderColor));
+  end;
+end;
+
 function HStack: THStack;
 begin
   Result := THStack.Create;
@@ -1761,6 +1839,7 @@ end;
 procedure TImageNode.Draw(const ACanvas: ISkCanvas; AContext: TSkRenderContext);
 var
   LImg: ISkImage;
+  LImgState: TSkImageState;
   RRect: TSkRoundRect;
   LRadii: TSkRoundRectRadii;
   LFont: ISkFont;
@@ -1771,14 +1850,14 @@ var
 begin
   if (FLayoutBounds.Width <= 0) or (FLayoutBounds.Height <= 0) then Exit;
 
-  // 1. 尝试从二级缓存加载
-  LImg := TSkImageCache.GetImage(FUrl, FOwner, procedure
+  // 1. 尝试从二级缓存加载，并获取三态生命周期
+  LImg := TSkImageCache.GetImageEx(FUrl, FOwner, procedure
   begin
     if (AContext <> nil) and Assigned(AContext.OnNeedRedraw) then
       AContext.OnNeedRedraw()
     else if (FOwner <> nil) and (FOwner is TSkVirtualListView) then
       TSkVirtualListView(FOwner).Redraw;
-  end);
+  end, LImgState);
 
   ACanvas.Save;
   try
@@ -1821,7 +1900,7 @@ begin
         ACanvas.DrawImageRect(LImg, FLayoutBounds);
     end
     else
-      ACanvas.DrawRect(FLayoutBounds, AContext.FillPaint(FPlaceholderColor));
+      DrawImagePlaceholderOrFallback(ACanvas, AContext, FLayoutBounds, LImgState, FPlaceholderColor);
 
     // 左上角专享/补贴标签（支持贴边单角圆角与浮动模式）
     if not FBadgeText.IsEmpty then
@@ -2038,6 +2117,7 @@ var
   ImgW, ImgH, BaseOffsetX, CurLeft, CurRight: Single;
   CurImgRect, SrcRect, TagRect, BarRect: TRectF;
   LImg: ISkImage;
+  LImgState: TSkImageState;
   RRect: TSkRoundRect;
   LRadii: TSkRoundRectRadii;
   LFont: ISkFont;
@@ -2073,13 +2153,13 @@ begin
       if (CurRight > FLayoutBounds.Left) and (CurLeft < FLayoutBounds.Right) then
       begin
         CurImgRect := RectF(CurLeft, FLayoutBounds.Top, CurRight, FLayoutBounds.Bottom);
-        LImg := TSkImageCache.GetImage(FImages[I], FOwner, procedure
+        LImg := TSkImageCache.GetImageEx(FImages[I], FOwner, procedure
         begin
           if (AContext <> nil) and Assigned(AContext.OnNeedRedraw) then
             AContext.OnNeedRedraw()
           else if (FOwner <> nil) and (FOwner is TSkVirtualListView) then
             TSkVirtualListView(FOwner).Redraw;
-        end);
+        end, LImgState);
 
         if LImg <> nil then
         begin
@@ -2104,7 +2184,7 @@ begin
             ACanvas.DrawImageRect(LImg, CurImgRect);
         end
         else
-          ACanvas.DrawRect(CurImgRect, AContext.FillPaint(FPlaceholderColor));
+          DrawImagePlaceholderOrFallback(ACanvas, AContext, CurImgRect, LImgState, FPlaceholderColor);
       end;
     end;
 

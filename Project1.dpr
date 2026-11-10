@@ -10,7 +10,8 @@ uses
   SkCardRenderers.Biz in 'SkCardRenderers.Biz.pas',
   Biz.OrderModel in 'Biz.OrderModel.pas',
   Biz.OrderRenderer in 'Biz.OrderRenderer.pas',
-  Unit1 in 'Unit1.pas' {Form1};
+  Unit1 in 'Unit1.pas' {Form1},
+  SkAsync in 'SkAsync.pas';
 
 {$R *.res}
 
