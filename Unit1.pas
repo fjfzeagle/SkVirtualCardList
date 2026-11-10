@@ -1,14 +1,15 @@
-﻿unit Unit1;
+unit Unit1;
 
 interface
 
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
+  System.Generics.Collections,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.Layouts,
   FMX.StdCtrls, FMX.DialogService,
   SkVirtualList.Core, SkCardRenderers.Biz, FMX.Controls.Presentation,
   FMX.Objects,
-  Biz.OrderModel, Biz.OrderRenderer;
+  Biz.OrderModel, Biz.OrderRenderer, SkAsync;
 
 type
   TViewMode = (vmProduct, vmMerchant, vmMixed, vmOrder);
@@ -28,6 +29,8 @@ type
     FRendererOrder: ISkCardRenderer;
     FCurrentMode: TViewMode;
     BtnToggleCruise: TButton;
+    BtnSimulateError: TButton;
+    FSimulateError: Boolean;
 
     procedure LoadProductData;
     procedure LoadMerchantData;
@@ -36,10 +39,10 @@ type
     procedure BtnMixedClick(Sender: TObject);
     procedure BtnOrderClick(Sender: TObject);
     procedure HandleItemClick(Sender: TObject; AIndex: Integer; AItem: TObject; AZoneID: Integer);
-    procedure HandleLoadMore(Sender: TObject);
-    procedure HandleRefresh(Sender: TObject);
+    procedure HandlePageFetch(Sender: TObject; const APage: Integer; const AIsRefresh: Boolean);
     procedure HandleEmptyClick(Sender: TObject);
     procedure HandleToggleCruiseClick(Sender: TObject);
+    procedure HandleToggleErrorClick(Sender: TObject);
   public
     procedure MouseWheel(Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean); override;
   end;
@@ -152,6 +155,18 @@ begin
   BtnToggleCruise.Text := '巡航:开';
   BtnToggleCruise.OnClick := HandleToggleCruiseClick;
 
+  // 动态创建并挂载“模拟接口异常”测试按钮
+  FSimulateError := False;
+  BtnSimulateError := TButton.Create(Self);
+  BtnSimulateError.Parent := BtnSingleProduct.Parent;
+  BtnSimulateError.Align := TAlignLayout.Right;
+  BtnSimulateError.Width := 56;
+  BtnSimulateError.Margins.Right := 4;
+  BtnSimulateError.Margins.Top := 8;
+  BtnSimulateError.Margins.Bottom := 8;
+  BtnSimulateError.Text := '故障:关';
+  BtnSimulateError.OnClick := HandleToggleErrorClick;
+
   // 1. 初始化各业务卡片渲染器
   FRendererProduct := TSingleProductCardRenderer.Create;
   FRendererMerchant := TDoubleMerchantCardRenderer.Create;
@@ -171,10 +186,9 @@ begin
   LayoutTopBar.BringToFront;
   LayoutContainer.ClipChildren := True;
 
-  // 4. 绑定统一精准点击事件、下拉刷新与触底加载更多回调
+  // 4. 绑定统一精准点击事件与现代分页控制器回调 (OnPageFetch 统一接管下拉刷新归位与上拉分页递增)
   FListView.OnItemClick := HandleItemClick;
-  FListView.OnLoadMore := HandleLoadMore;
-  FListView.OnRefresh := HandleRefresh;
+  FListView.OnPageFetch := HandlePageFetch;
 
   Randomize;
 
@@ -320,6 +334,15 @@ begin
     BtnToggleCruise.Text := '巡航:开'
   else
     BtnToggleCruise.Text := '巡航:关';
+end;
+
+procedure TForm1.HandleToggleErrorClick(Sender: TObject);
+begin
+  FSimulateError := not FSimulateError;
+  if FSimulateError then
+    BtnSimulateError.Text := '故障:开'
+  else
+    BtnSimulateError.Text := '故障:关';
 end;
 
 procedure TForm1.LoadProductData;
@@ -501,38 +524,17 @@ begin
   FListView.Redraw;
 end;
 
-procedure TForm1.HandleRefresh(Sender: TObject);
+procedure TForm1.HandlePageFetch(Sender: TObject; const APage: Integer; const AIsRefresh: Boolean);
 begin
-  // 模拟异步下拉刷新（600ms 后重载数据并调用 FinishRefreshing 平滑回弹）
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(600);
-    TThread.Synchronize(nil, procedure
-    begin
-      if FCurrentMode = vmProduct then
-        LoadProductData
-      else if FCurrentMode = vmMerchant then
-        LoadMerchantData
-      else if FCurrentMode = vmOrder then
-        LoadOrderData
-      else
-        LoadMixedData;
-      FListView.FinishRefreshing;
-    end);
-  end).Start;
-end;
-
-procedure TForm1.HandleLoadMore(Sender: TObject);
-begin
-  // 模拟异步拉取分页数据（350ms 后追加数据）
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(350);
-    TThread.Synchronize(nil, procedure
+  // 使用轻量原生执行器 TAsync.Run 异步调度后台线程池调用接口
+  TAsync.Run<TArray<TObject>>(
+    function: TArray<TObject>
     var
       StartIdx, J: Integer;
       ProdItem: TProductItem;
       MerchItem: TMerchantItem;
+      NewOrder: TOrder;
+      LItems: TList<TObject>;
     const
       Stores: array[0..5] of string = (
         '鲜丰水果（科技路店）',
@@ -545,108 +547,145 @@ begin
       Rates: array[0..5] of Single = (4.8, 4.7, 4.9, 4.6, 4.5, 4.4);
       Sales: array[0..5] of string = ('月售 1200+', '月售 3200+', '月售 800+', '月售 500+', '月售 260+', '月售 950+');
     begin
-      StartIdx := FListView.Items.Count + 1;
-      if FCurrentMode = vmProduct then
-      begin
-        for J := StartIdx to StartIdx + 9 do
+      // 1. 【子线程执行】模拟网络 I/O 延迟
+      Sleep(350);
+
+      // 故障注入测试：若用户开启了“故障模拟”开关，在后台抛出网络或接口异常
+      if FSimulateError then
+        raise Exception.Create('远程接口请求超时 [HTTP 504 Gateway Timeout]，服务器无响应！');
+
+      LItems := TList<TObject>.Create;
+      try
+        // 若为下拉刷新，重载第 1 批基础数据
+        if AIsRefresh then
+          StartIdx := 1
+        else
+          StartIdx := (APage - 1) * 10 + 1;
+
+        if FCurrentMode = vmProduct then
         begin
+          for J := StartIdx to StartIdx + 9 do
+          begin
+            ProdItem := TProductItem.Create;
+            ProdItem.ID := J.ToString;
+            ProdItem.Title := BaseTitles[(J - 1) mod 8] + Format(' (第%d页)', [APage]);
+            ProdItem.ShopTag := '小店好货';
+            ProdItem.Subtitle := '起始日期：2026-10-01　终止日期：2026-10-30';
+            ProdItem.ShelfLife := Format('%d天', [30 + (J mod 3) * 30]);
+            ProdItem.Road := '科技大道';
+            ProdItem.Address := Format('地址：科技大道%d号创新大厦1019室', [J mod 20 + 1]);
+            ProdItem.Price := Prices[(J - 1) mod 8];
+            ProdItem.OriginalPrice := OldPrices[(J - 1) mod 8];
+            ProdItem.PriceTag := PriceTags[(J - 1) mod 3];
+            ProdItem.TagTop := Tags[(J - 1) mod 4];
+            ProdItem.BottomTag := BottomTags[(J - 1) mod 4];
+            ProdItem.ImageUrl := ProductImages[(J - 1) mod 8];
+            ProdItem.Images := [
+              ProductImages[(J - 1) mod 8],
+              ProductImages[((J - 1) + 1) mod 8],
+              ProductImages[((J - 1) + 2) mod 8]
+            ];
+            ProdItem.ActiveImageIndex := 0;
+            ProdItem.ImageScrollOffset := 0;
+            ProdItem.AutoCruise := False;
+            LItems.Add(ProdItem);
+          end;
+        end
+        else if FCurrentMode = vmMerchant then
+        begin
+          for J := StartIdx to StartIdx + 9 do
+          begin
+            MerchItem := TMerchantItem.Create;
+            MerchItem.ID := J.ToString;
+            MerchItem.Title := Stores[J mod 6] + Format(' (第%d页-%d)', [APage, J]);
+            MerchItem.Road := '科技大道';
+            MerchItem.Address := Format('科技大道%d号创新大厦1019室', [J mod 20 + 1]);
+            MerchItem.SalesVolume := Sales[J mod 6];
+            MerchItem.Rating := Rates[J mod 6];
+            MerchItem.ImageUrl := MerchantImages[Random(6)];
+            LItems.Add(MerchItem);
+          end;
+        end
+        else if FCurrentMode = vmOrder then
+        begin
+          for J := 1 to 3 do
+          begin
+            NewOrder := TOrder.Create('YT20261103' + Format('%.4d', [StartIdx + J]), '2026-11-03', '已完成');
+            NewOrder.AddDetail(Format('追加商品(第%d页) - ', [APage]) + BaseTitles[(StartIdx + J) mod 8],
+              ProductImages[(StartIdx + J) mod 8], '规格标准版', Prices[(StartIdx + J) mod 8], 1 + (J mod 2));
+            if J mod 2 = 0 then
+              NewOrder.AddDetail('赠品 - 蒙牛纯牛奶250ml', ProductImages[7], '随单赠送', 0.0, 1);
+            LItems.Add(NewOrder);
+          end;
+        end
+        else
+        begin
+          // 混排模式追加
           ProdItem := TProductItem.Create;
-          ProdItem.ID := J.ToString;
-          ProdItem.Title := BaseTitles[(J - 1) mod 8] + Format(' (第%d批)', [J div 10]);
-          ProdItem.ShopTag := '小店好货';
+          ProdItem.ID := 'P_' + StartIdx.ToString;
+          ProdItem.Title := Format('【第%d页爆款】', [APage]) + BaseTitles[(StartIdx - 1) mod 8];
+          ProdItem.ShopTag := '超级精选';
           ProdItem.Subtitle := '起始日期：2026-10-01　终止日期：2026-10-30';
-          ProdItem.ShelfLife := Format('%d天', [30 + (J mod 3) * 30]);
+          ProdItem.ShelfLife := '60天';
           ProdItem.Road := '科技大道';
-          ProdItem.Address := Format('地址：科技大道%d号创新大厦1019室', [J mod 20 + 1]);
-          ProdItem.Price := Prices[(J - 1) mod 8];
-          ProdItem.OriginalPrice := OldPrices[(J - 1) mod 8];
-          ProdItem.PriceTag := PriceTags[(J - 1) mod 3];
-          ProdItem.TagTop := Tags[(J - 1) mod 4];
-          ProdItem.BottomTag := BottomTags[(J - 1) mod 4];
-          ProdItem.ImageUrl := ProductImages[(J - 1) mod 8];
+          ProdItem.Address := '科技大道特1号';
+          ProdItem.Price := Prices[(StartIdx - 1) mod 8];
+          ProdItem.OriginalPrice := OldPrices[(StartIdx - 1) mod 8];
+          ProdItem.PriceTag := '直降补贴';
+          ProdItem.TagTop := '单列通栏';
+          ProdItem.BottomTag := '正品包邮';
+          ProdItem.ImageUrl := ProductImages[(StartIdx - 1) mod 8];
           ProdItem.Images := [
-            ProductImages[(J - 1) mod 8],
-            ProductImages[((J - 1) + 1) mod 8],
-            ProductImages[((J - 1) + 2) mod 8]
+            ProductImages[(StartIdx - 1) mod 8],
+            ProductImages[((StartIdx - 1) + 1) mod 8],
+            ProductImages[((StartIdx - 1) + 2) mod 8]
           ];
           ProdItem.ActiveImageIndex := 0;
           ProdItem.ImageScrollOffset := 0;
-          ProdItem.AutoCruise := False; // 追加的普通分页商品默认不开启巡航
-          FListView.Items.Add(ProdItem);
-        end;
-      end
-      else if FCurrentMode = vmMerchant then
-      begin
-        for J := StartIdx to StartIdx + 9 do
-        begin
-          MerchItem := TMerchantItem.Create;
-          MerchItem.ID := J.ToString;
-          MerchItem.Title := Stores[J mod 6] + Format(' (分店%d)', [J]);
-          MerchItem.Road := '科技大道';
-          MerchItem.Address := Format('科技大道%d号创新大厦1019室', [J mod 20 + 1]);
-          MerchItem.SalesVolume := Sales[J mod 6];
-          MerchItem.Rating := Rates[J mod 6];
-          MerchItem.ImageUrl := MerchantImages[Random(6)];
-          FListView.Items.Add(MerchItem);
-        end;
-      end
-      else if FCurrentMode = vmOrder then
-      begin
-        for J := 1 to 3 do
-        begin
-          var NewOrder := TOrder.Create('YT20261103' + Format('%.4d', [StartIdx + J]), '2026-11-03', '已完成');
-          NewOrder.AddDetail('追加商品 - ' + BaseTitles[(StartIdx + J) mod 8],
-            ProductImages[(StartIdx + J) mod 8], '规格标准版', Prices[(StartIdx + J) mod 8], 1 + (J mod 2));
-          if J mod 2 = 0 then
-            NewOrder.AddDetail('赠品 - 蒙牛纯牛奶250ml', ProductImages[7], '随单赠送', 0.0, 1);
-          FListView.Items.Add(NewOrder);
-        end;
-      end
-      else
-      begin
-        // 混排模式追加：1个爆款单列通栏卡 + 6家双列网格店铺卡
-        ProdItem := TProductItem.Create;
-        ProdItem.ID := 'P_' + StartIdx.ToString;
-        ProdItem.Title := '【追加爆款】' + BaseTitles[(StartIdx - 1) mod 8];
-        ProdItem.ShopTag := '超级精选';
-        ProdItem.Subtitle := '起始日期：2026-10-01　终止日期：2026-10-30';
-        ProdItem.ShelfLife := '60天';
-        ProdItem.Road := '科技大道';
-        ProdItem.Address := '科技大道特1号';
-        ProdItem.Price := Prices[(StartIdx - 1) mod 8];
-        ProdItem.OriginalPrice := OldPrices[(StartIdx - 1) mod 8];
-        ProdItem.PriceTag := '直降补贴';
-        ProdItem.TagTop := '单列通栏';
-        ProdItem.BottomTag := '正品包邮';
-        ProdItem.ImageUrl := ProductImages[(StartIdx - 1) mod 8];
-        ProdItem.Images := [
-          ProductImages[(StartIdx - 1) mod 8],
-          ProductImages[((StartIdx - 1) + 1) mod 8],
-          ProductImages[((StartIdx - 1) + 2) mod 8]
-        ];
-        ProdItem.ActiveImageIndex := 0;
-        ProdItem.ImageScrollOffset := 0;
-        ProdItem.AutoCruise := False; // 混排追加的爆款卡默认不开启巡航
-        FListView.Items.Add(ProdItem);
+          ProdItem.AutoCruise := False;
+          LItems.Add(ProdItem);
 
-        for J := StartIdx + 1 to StartIdx + 6 do
-        begin
-          MerchItem := TMerchantItem.Create;
-          MerchItem.ID := 'M_' + J.ToString;
-          MerchItem.Title := Stores[J mod 6] + Format(' (混排推荐%d)', [J]);
-          MerchItem.Road := '科技大道';
-          MerchItem.Address := '科技大道商业街';
-          MerchItem.SalesVolume := Sales[J mod 6];
-          MerchItem.Rating := Rates[J mod 6];
-          MerchItem.ImageUrl := MerchantImages[Random(6)];
-          FListView.Items.Add(MerchItem);
+          for J := StartIdx + 1 to StartIdx + 6 do
+          begin
+            MerchItem := TMerchantItem.Create;
+            MerchItem.ID := 'M_' + J.ToString;
+            MerchItem.Title := Stores[J mod 6] + Format(' (第%d页-%d)', [APage, J]);
+            MerchItem.Road := '科技大道';
+            MerchItem.Address := '科技大道商业街';
+            MerchItem.SalesVolume := Sales[J mod 6];
+            MerchItem.Rating := Rates[J mod 6];
+            MerchItem.ImageUrl := MerchantImages[Random(6)];
+            LItems.Add(MerchItem);
+          end;
         end;
+
+        Result := LItems.ToArray;
+      finally
+        LItems.Free;
       end;
+    end)
+    .OnSuccess(procedure(AItems: TArray<TObject>)
+    var
+      Item: TObject;
+      HasNextPage: Boolean;
+    begin
+      // 2. 【UI 主线程安全回调】渲染数据到列表
+      if AIsRefresh then
+        FListView.Clear;
 
-      FListView.IsLoadingMore := False;
-      FListView.UpdateLayout;
+      for Item in AItems do
+        FListView.Items.Add(Item);
+
+      // 模拟在第 3 页达到上限（HasNextPage := False，底部自绘“— 已显示全部内容 —”）
+      HasNextPage := (APage < 3);
+      FListView.FinishFetch(True, HasNextPage);
+    end)
+    .OnError(procedure(E: Exception)
+    begin
+      // 3. 【UI 主线程安全回调】拦截异常、弹窗提示并收敛分页状态
+      FListView.FinishFetch(False, False);
+      TDialogService.ShowMessage('接口拉取失败: ' + E.Message);
     end);
-  end).Start;
 end;
 
 procedure TForm1.HandleItemClick(Sender: TObject; AIndex: Integer; AItem: TObject; AZoneID: Integer);

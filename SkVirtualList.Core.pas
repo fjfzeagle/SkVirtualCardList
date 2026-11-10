@@ -94,6 +94,9 @@ type
 
   TOnVirtualItemEvent = procedure(Sender: TObject; AIndex: Integer; AItem: TObject; AZoneID: Integer) of object;
 
+  // 统一分页拉取事件 (APage: 请求目标页码; AIsRefresh: True 为下拉刷新，False 为上拉加载)
+  TOnPageFetchEvent = procedure(Sender: TObject; const APage: Integer; const AIsRefresh: Boolean) of object;
+
   // 轮播图平滑缓动动画单元
   TSnapAnimation = record
     Item: TObject;
@@ -151,10 +154,16 @@ type
     FLastUserActionTime: UInt64;
     FLastAutoCruiseTime: UInt64;
 
-    // 上拉加载更多
+    // 上拉加载更多与分页控制器
     FOnLoadMore: TNotifyEvent;
     FIsLoadingMore: Boolean;
     FHasMore: Boolean;
+    FPageIndex: Integer;
+    FPageSize: Integer;
+    FTargetPageIndex: Integer;
+    FNoMoreText: string;
+    FShowNoMoreFooter: Boolean;
+    FOnPageFetch: TOnPageFetchEvent;
 
     // 下拉刷新
     FOnRefresh: TNotifyEvent;
@@ -201,6 +210,8 @@ type
     procedure SmoothScrollToTop;
     procedure TriggerEntranceAnimation;
     procedure FinishRefreshing;
+    procedure FinishFetch(const ASuccess: Boolean; const AHasMore: Boolean); overload;
+    procedure FinishFetch(const ANewItemsCount: Integer; const ASuccess: Boolean = True); overload;
 
     property Context: TSkRenderContext read FContext;
     property Items: TObjectList<TObject> read FItems;
@@ -210,6 +221,11 @@ type
     property OnLoadMore: TNotifyEvent read FOnLoadMore write FOnLoadMore;
     property IsLoadingMore: Boolean read FIsLoadingMore write FIsLoadingMore;
     property HasMore: Boolean read FHasMore write FHasMore;
+    property PageIndex: Integer read FPageIndex write FPageIndex;
+    property PageSize: Integer read FPageSize write FPageSize;
+    property NoMoreText: string read FNoMoreText write FNoMoreText;
+    property ShowNoMoreFooter: Boolean read FShowNoMoreFooter write FShowNoMoreFooter;
+    property OnPageFetch: TOnPageFetchEvent read FOnPageFetch write FOnPageFetch;
     property OnRefresh: TNotifyEvent read FOnRefresh write FOnRefresh;
     property IsRefreshing: Boolean read FIsRefreshing;
     property EnablePullRefresh: Boolean read FEnablePullRefresh write FEnablePullRefresh;
@@ -577,6 +593,11 @@ begin
 
   FIsLoadingMore := False;
   FHasMore := True;
+  FPageIndex := 1;
+  FPageSize := 20;
+  FTargetPageIndex := 1;
+  FNoMoreText := '— 已显示全部内容 —';
+  FShowNoMoreFooter := True;
   FIsRefreshing := False;
   FEnablePullRefresh := True;
   FIsLoading := False;
@@ -797,20 +818,26 @@ end;
 function TSkVirtualListView.GetTotalContentHeight: Single;
 begin
   Result := FTotalContentHeight;
+  if (not FHasMore) and (FItems.Count > 0) and FShowNoMoreFooter then
+    Result := Result + 42;
 end;
 
 procedure TSkVirtualListView.CheckLoadMore;
 var
   TotalH: Single;
 begin
-  if (not FIsLoadingMore) and FHasMore and Assigned(FOnLoadMore) then
+  if (not FIsLoadingMore) and FHasMore and (Assigned(FOnLoadMore) or Assigned(FOnPageFetch)) then
   begin
     TotalH := GetTotalContentHeight;
     // 【核心修复 2】提前预留 1.2 倍视口高度进行静默拉取，绝不触碰底部的越界回弹物理区
     if (TotalH > Height) and ((FScrollY + Height) >= (TotalH - (Height * 1.2))) then
     begin
       FIsLoadingMore := True;
-      FOnLoadMore(Self);
+      FTargetPageIndex := FPageIndex + 1;
+      if Assigned(FOnPageFetch) then
+        FOnPageFetch(Self, FTargetPageIndex, False)
+      else if Assigned(FOnLoadMore) then
+        FOnLoadMore(Self);
       // 注意：静默拉取过程中不要触发重排与重绘，保持现有滑动完全匀速
     end;
   end;
@@ -865,6 +892,9 @@ var
 begin
   FActiveSnaps.Clear;
   FItems.Clear;
+  FPageIndex := 1;
+  FTargetPageIndex := 1;
+  FHasMore := True;
   if FRenderer <> nil then
     FRenderer.ClearCache;
   for Pair in FRendererMap do
@@ -886,6 +916,34 @@ begin
   FAniCalculations.ViewportPosition := TPointD.Create(0, 0);
   FScrollY := 0;
   Redraw;
+end;
+
+procedure TSkVirtualListView.FinishFetch(const ASuccess: Boolean; const AHasMore: Boolean);
+begin
+  if FIsRefreshing then
+  begin
+    if ASuccess then
+      FPageIndex := 1;
+    FHasMore := AHasMore;
+    FinishRefreshing;
+  end
+  else if FIsLoadingMore then
+  begin
+    if ASuccess then
+      FPageIndex := FTargetPageIndex;
+    FHasMore := AHasMore;
+    FIsLoadingMore := False;
+  end
+  else
+  begin
+    FHasMore := AHasMore;
+  end;
+  UpdateLayout;
+end;
+
+procedure TSkVirtualListView.FinishFetch(const ANewItemsCount: Integer; const ASuccess: Boolean);
+begin
+  FinishFetch(ASuccess, ANewItemsCount >= FPageSize);
 end;
 
 procedure TSkVirtualListView.UpdateLayout;
@@ -1177,12 +1235,16 @@ begin
       FAniCalculations.MouseUp(X, Y);
 
       // 下拉刷新判定：若下拉超过 50px 且松手
-      if FEnablePullRefresh and (not FIsRefreshing) and Assigned(FOnRefresh) and (FScrollY <= -50) then
+      if FEnablePullRefresh and (not FIsRefreshing) and (Assigned(FOnRefresh) or Assigned(FOnPageFetch)) and (FScrollY <= -50) then
       begin
         FIsRefreshing := True;
+        FTargetPageIndex := 1;
         FScrollY := -60;
         FAniCalculations.ViewportPosition := TPointD.Create(0, -60);
-        FOnRefresh(Self);
+        if Assigned(FOnPageFetch) then
+          FOnPageFetch(Self, 1, True)
+        else if Assigned(FOnRefresh) then
+          FOnRefresh(Self);
       end
       else if not FHasDragged then
       begin
@@ -1375,14 +1437,15 @@ end;
 procedure TSkVirtualListView.Draw(const ACanvas: ISkCanvas; const ADest: TRectF; const AOpacity: Single);
 var
   I: Integer;
-  CardRect, LoadingRect, HeaderRect, BackToTopRect: TRectF;
+  CardRect, LoadingRect, HeaderRect, BackToTopRect, FooterRect: TRectF;
   LFont: ISkFont;
-  LoadText, RefreshText: string;
+  LoadText, RefreshText, TipText: string;
   Baseline, TextW, PullH, ViewTop, ViewBottom: Single;
+  FooterH, FooterY, TextLeft, CenterX, LineY: Single;
   ItemRenderer: ISkCardRenderer;
   TargetAlpha, BtnCenterX, BtnCenterY: Single;
   CRec: TAlphaColorRec;
-  ArrowPaint: ISkPaint;
+  ArrowPaint, LinePaint: ISkPaint;
 begin
   ACanvas.Save;
   try
@@ -1450,7 +1513,7 @@ begin
           (FPressedIndex = I), FPressedZoneID);
     end;
 
-    // 6. 绘制底部“正在加载更多...”提示
+    // 6. 绘制底部加载或无更多数据状态提示
     if FIsLoadingMore and (FTotalContentHeight > 0) then
     begin
       LoadingRect := RectF(0, FTotalContentHeight - FScrollY - 34, Width, FTotalContentHeight - FScrollY);
@@ -1460,6 +1523,34 @@ begin
       TextW := LFont.MeasureText(LoadText);
       ACanvas.DrawSimpleText(LoadText, Max(0, (Width - TextW) / 2), Baseline, LFont,
         FContext.FillPaint($FF999999));
+    end
+    else if (not FHasMore) and (FItems.Count > 0) and FShowNoMoreFooter and (FTotalContentHeight > 0) then
+    begin
+      FooterH := 42;
+      FooterY := FTotalContentHeight - FScrollY;
+      if (FooterY < Height) and (FooterY + FooterH > 0) then
+      begin
+        FooterRect := RectF(0, FooterY, Width, FooterY + FooterH);
+        LFont := FContext.Font(10.5, False);
+        Baseline := FContext.GetCenterBaseline(LFont, FooterRect);
+        TipText := FNoMoreText;
+        if TipText = '' then TipText := '— 已显示全部内容 —';
+        TextW := LFont.MeasureText(TipText);
+        CenterX := Width / 2;
+        TextLeft := Max(0, CenterX - TextW / 2);
+
+        // 居中文案
+        ACanvas.DrawSimpleText(TipText, TextLeft, Baseline, LFont, FContext.FillPaint($FFAAAAAA));
+
+        // 左右精致装饰细线
+        if Width > (TextW + 80) then
+        begin
+          LineY := FooterRect.CenterPoint.Y;
+          LinePaint := FContext.StrokePaint($FFE0E0E0, 1.0);
+          ACanvas.DrawLine(PointF(TextLeft - 36, LineY), PointF(TextLeft - 10, LineY), LinePaint);
+          ACanvas.DrawLine(PointF(TextLeft + TextW + 10, LineY), PointF(TextLeft + TextW + 36, LineY), LinePaint);
+        end;
+      end;
     end;
 
     // 7. 绘制回到顶部悬浮自绘按钮 (超过 180px 显示，回到顶部时瞬间隐去，绝不残留)
