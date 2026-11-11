@@ -1,4 +1,4 @@
-# Delphi FMX + Skia 高性能虚拟化卡片列表与声明式 UI DSL
+﻿# Delphi FMX + Skia 高性能虚拟化卡片列表与声明式 UI DSL
 
 > 完整开发使用手册请查阅同一目录下的 [使用文档.md](file:///d:/develop/borland/yin_tai/doc/202610/SkVirtualCardList/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3.md)。
 

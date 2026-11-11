@@ -408,21 +408,42 @@ end;
 
 procedure TForm1.HandleBadImageClick(Sender: TObject);
 var
-  TargetItem: TObject;
+  TargetIdx, I: Integer;
   Prod: TProductItem;
 begin
-  if FListView.Items.Count < 2 then Exit;
-  // 选取第 2 个商品卡片，注入 404 失效图片地址
-  TargetItem := FListView.Items[1];
-  if TargetItem is TProductItem then
+  if FListView.Items.Count = 0 then Exit;
+
+  // 优先选取首个带有画廊轮播的商品大卡进行测试
+  TargetIdx := -1;
+  for I := 0 to FListView.Items.Count - 1 do
   begin
-    Prod := TProductItem(TargetItem);
+    if FListView.Items[I] is TProductItem then
+    begin
+      TargetIdx := I;
+      Break;
+    end;
+  end;
+
+  if TargetIdx >= 0 then
+  begin
+    Prod := TProductItem(FListView.Items[TargetIdx]);
+    // 注入 404 失效地址，并将当前轮播图全部设为坏图，重置手势位移
     Prod.ImageUrl := 'https://trae-api-cn.mchost.guru/404_invalid_image.jpg';
-    Prod.Images := ['https://trae-api-cn.mchost.guru/404_invalid_image.jpg'];
-    // 清理可能存在的历史缓存
-    TSkImageCache.RetryUrl(Prod.ImageUrl);
-    // 触发局部重绘：卡片将展现加载中脉冲动效，并随后回退到失败兜底图
-    FListView.NotifyItemChanged(1, False);
+    Prod.Images := [
+      'https://trae-api-cn.mchost.guru/404_invalid_image.jpg',
+      'https://trae-api-cn.mchost.guru/404_invalid_image_2.jpg',
+      'https://trae-api-cn.mchost.guru/404_invalid_image_3.jpg'
+    ];
+    Prod.ActiveImageIndex := 0;
+    Prod.ImageScrollOffset := 0;
+
+    // 清理失败冷却表与可能存在的历史坏文件
+    TSkImageCache.RetryUrl('https://trae-api-cn.mchost.guru/404_invalid_image.jpg');
+    TSkImageCache.RetryUrl('https://trae-api-cn.mchost.guru/404_invalid_image_2.jpg');
+    TSkImageCache.RetryUrl('https://trae-api-cn.mchost.guru/404_invalid_image_3.jpg');
+
+    // 触发局部重绘：立即使 DSL 编译缓存失效，展现加载中脉冲动效，并随后回退到失败兜底图
+    FListView.NotifyItemChanged(TargetIdx, False);
   end;
 end;
 

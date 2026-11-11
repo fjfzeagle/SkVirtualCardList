@@ -2114,7 +2114,7 @@ end;
 
 procedure TCarouselNode.Draw(const ACanvas: ISkCanvas; AContext: TSkRenderContext);
 var
-  I: Integer;
+  I, SafeActiveIndex: Integer;
   ImgW, ImgH, BaseOffsetX, CurLeft, CurRight: Single;
   CurImgRect, SrcRect, TagRect, BarRect: TRectF;
   LImg: ISkImage;
@@ -2142,8 +2142,9 @@ begin
       ACanvas.ClipRoundRect(RRect, TSkClipOp.Intersect, True);
     end;
 
-    // 2. 计算基准 X 偏移量
-    BaseOffsetX := -(FActiveIndex * ImgW) + FScrollOffset;
+    // 2. 计算基准 X 偏移量 (安全防御：索引必须收敛在有效边界 [0 .. High(FImages)] 内，杜绝越界偏出视口致白屏)
+    SafeActiveIndex := EnsureRange(FActiveIndex, 0, Max(0, High(FImages)));
+    BaseOffsetX := -(SafeActiveIndex * ImgW) + FScrollOffset;
 
     // 3. 绘制落在可视边界内的图片
     for I := 0 to High(FImages) do
@@ -2235,7 +2236,7 @@ begin
 
       for I := 0 to High(FImages) do
       begin
-        if I = FActiveIndex then
+        if I = SafeActiveIndex then
         begin
           ItemRect := RectF(CurItemX, ItemY, CurItemX + ActiveW, ItemY + InactiveW);
           ACanvas.DrawRoundRect(TSkRoundRect.Create(ItemRect, InactiveW / 2, InactiveW / 2),

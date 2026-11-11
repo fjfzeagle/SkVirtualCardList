@@ -1,4 +1,4 @@
-<p>这是一套基于 <strong>Delphi FireMonkey (FMX)</strong> 结合 <strong>Skia (FMX.Skia)</strong> 实现的<strong>高性能高性能自绘虚拟化卡片列表</strong>方案。整体设计借鉴了移动端现代 UI 渲染引擎（如 Flutter）的思路，采用“纯画布自绘 + 数据虚拟化”取代了 FMX 传统重量级的子控件树方案。</p>
+﻿<p>这是一套基于 <strong>Delphi FireMonkey (FMX)</strong> 结合 <strong>Skia (FMX.Skia)</strong> 实现的<strong>高性能高性能自绘虚拟化卡片列表</strong>方案。整体设计借鉴了移动端现代 UI 渲染引擎（如 Flutter）的思路，采用“纯画布自绘 + 数据虚拟化”取代了 FMX 传统重量级的子控件树方案。</p>
 <p>以下是对这套代码的全面深度分析：</p>
 <hr>
 <h3>一、 整体架构与设计模式</h3>
