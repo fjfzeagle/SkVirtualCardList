@@ -38,7 +38,7 @@ object Form1: TForm1
           Margins.Bottom = 8.000000000000000000
           Position.X = 8.000000000000000000
           Position.Y = 8.000000000000000000
-          Size.Width = 196.000000000000000000
+          Size.Width = 105.000000000000000000
           Size.Height = 36.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 0
@@ -52,9 +52,9 @@ object Form1: TForm1
           Margins.Top = 8.000000000000000000
           Margins.Right = 8.000000000000000000
           Margins.Bottom = 8.000000000000000000
-          Position.X = 212.000000000000000000
+          Position.X = 121.000000000000000000
           Position.Y = 8.000000000000000000
-          Size.Width = 210.000000000000000000
+          Size.Width = 104.000000000000000000
           Size.Height = 36.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 1
