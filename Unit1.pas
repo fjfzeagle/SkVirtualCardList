@@ -19,6 +19,7 @@ type
     BtnSingleProduct: TButton;
     BtnDoubleMerchant: TButton;
     LayoutContainer: TLayout;
+    HorzScrollBox1: THorzScrollBox;
     procedure FormCreate(Sender: TObject);
     procedure BtnSingleProductClick(Sender: TObject);
     procedure BtnDoubleMerchantClick(Sender: TObject);
@@ -108,88 +109,114 @@ const
 procedure TForm1.FormCreate(Sender: TObject);
 var
   BtnEmptyState, BtnMixed: TButton;
+  BtnOrder: TButton;
 begin
   Caption := 'Skia 虚拟化解耦列表 (声明式 DSL / 多图轮播 / 下拉刷新 / 骨架屏 / 单双列同屏混排)';
+
+  // 配置顶部水平滚动导航条：隐藏滚动条保持精致，支持触控横向滑动
+  HorzScrollBox1.ShowScrollBars := False;
+
+  // 1. 模式切换按钮组
+  BtnSingleProduct.Parent := HorzScrollBox1;
+  BtnSingleProduct.Align := TAlignLayout.Left;
+  BtnSingleProduct.Width := 46;
+  BtnSingleProduct.Margins.Left := 6;
+  BtnSingleProduct.Margins.Top := 8;
+  BtnSingleProduct.Margins.Bottom := 8;
+  BtnSingleProduct.Margins.Right := 2;
   BtnSingleProduct.Text := '单列';
-  BtnSingleProduct.Width := 36;
+
+  BtnDoubleMerchant.Parent := HorzScrollBox1;
+  BtnDoubleMerchant.Align := TAlignLayout.Left;
+  BtnDoubleMerchant.Width := 46;
+  BtnDoubleMerchant.Margins.Left := 4;
+  BtnDoubleMerchant.Margins.Top := 8;
+  BtnDoubleMerchant.Margins.Bottom := 8;
+  BtnDoubleMerchant.Margins.Right := 2;
   BtnDoubleMerchant.Text := '双列';
-  BtnDoubleMerchant.Width := 36;
 
   // 动态创建“同屏混排”模式切换按钮
   BtnMixed := TButton.Create(Self);
-  BtnMixed.Parent := BtnSingleProduct.Parent;
+  BtnMixed.Parent := HorzScrollBox1;
   BtnMixed.Align := TAlignLayout.Left;
-  BtnMixed.Width := 36;
+  BtnMixed.Width := 46;
   BtnMixed.Margins.Left := 4;
   BtnMixed.Margins.Top := 8;
   BtnMixed.Margins.Bottom := 8;
+  BtnMixed.Margins.Right := 2;
   BtnMixed.Text := '混排';
   BtnMixed.OnClick := BtnMixedClick;
 
   // 动态创建“订单分组”模式切换按钮 (方案 A 复合单据卡片)
-  var BtnOrder := TButton.Create(Self);
-  BtnOrder.Parent := BtnSingleProduct.Parent;
+  BtnOrder := TButton.Create(Self);
+  BtnOrder.Parent := HorzScrollBox1;
   BtnOrder.Align := TAlignLayout.Left;
-  BtnOrder.Width := 36;
+  BtnOrder.Width := 46;
   BtnOrder.Margins.Left := 4;
   BtnOrder.Margins.Top := 8;
   BtnOrder.Margins.Bottom := 8;
+  BtnOrder.Margins.Right := 2;
   BtnOrder.Text := '订单';
   BtnOrder.OnClick := BtnOrderClick;
 
-  // 动态创建并挂载“空状态”测试按钮
+  // 2. 功能测试按钮组（顺排在 HorzScrollBox1 内，横向自由滑动）
   BtnEmptyState := TButton.Create(Self);
-  BtnEmptyState.Parent := BtnSingleProduct.Parent;
-  BtnEmptyState.Align := TAlignLayout.Right;
-  BtnEmptyState.Width := 56;
-  BtnEmptyState.Margins.Right := 6;
+  BtnEmptyState.Parent := HorzScrollBox1;
+  BtnEmptyState.Align := TAlignLayout.Left;
+  BtnEmptyState.Width := 58;
+  BtnEmptyState.Margins.Left := 4;
   BtnEmptyState.Margins.Top := 8;
   BtnEmptyState.Margins.Bottom := 8;
+  BtnEmptyState.Margins.Right := 2;
   BtnEmptyState.Text := '空状态';
   BtnEmptyState.OnClick := HandleEmptyClick;
 
   // 动态创建并挂载“自动巡航控制开关”按钮
   BtnToggleCruise := TButton.Create(Self);
-  BtnToggleCruise.Parent := BtnSingleProduct.Parent;
-  BtnToggleCruise.Align := TAlignLayout.Right;
+  BtnToggleCruise.Parent := HorzScrollBox1;
+  BtnToggleCruise.Align := TAlignLayout.Left;
   BtnToggleCruise.Width := 68;
-  BtnToggleCruise.Margins.Right := 4;
+  BtnToggleCruise.Margins.Left := 4;
   BtnToggleCruise.Margins.Top := 8;
   BtnToggleCruise.Margins.Bottom := 8;
+  BtnToggleCruise.Margins.Right := 2;
   BtnToggleCruise.Text := '巡航:开';
   BtnToggleCruise.OnClick := HandleToggleCruiseClick;
 
   // 动态创建并挂载“模拟接口异常”测试按钮
   FSimulateError := False;
   BtnSimulateError := TButton.Create(Self);
-  BtnSimulateError.Parent := BtnSingleProduct.Parent;
-  BtnSimulateError.Align := TAlignLayout.Right;
-  BtnSimulateError.Width := 56;
-  BtnSimulateError.Margins.Right := 4;
+  BtnSimulateError.Parent := HorzScrollBox1;
+  BtnSimulateError.Align := TAlignLayout.Left;
+  BtnSimulateError.Width := 60;
+  BtnSimulateError.Margins.Left := 4;
   BtnSimulateError.Margins.Top := 8;
   BtnSimulateError.Margins.Bottom := 8;
+  BtnSimulateError.Margins.Right := 2;
   BtnSimulateError.Text := '故障:关';
   BtnSimulateError.OnClick := HandleToggleErrorClick;
 
   // 动态创建并挂载“局部刷新”测试按钮（等高 O(1) 原地刷新）
   BtnTestPartial := TButton.Create(Self);
-  BtnTestPartial.Parent := BtnSingleProduct.Parent;
-  BtnTestPartial.Align := TAlignLayout.Right;
+  BtnTestPartial.Parent := HorzScrollBox1;
+  BtnTestPartial.Align := TAlignLayout.Left;
   BtnTestPartial.Width := 68;
-  BtnTestPartial.Margins.Right := 4;
+  BtnTestPartial.Margins.Left := 4;
   BtnTestPartial.Margins.Top := 8;
   BtnTestPartial.Margins.Bottom := 8;
+  BtnTestPartial.Margins.Right := 2;
   BtnTestPartial.Text := '局部改价';
   BtnTestPartial.OnClick := HandlePartialUpdateClick;
 
   // 动态创建并挂载“坏图兜底”测试按钮（离线脉冲与失败回退测试）
   BtnTestBadImage := TButton.Create(Self);
-  BtnTestBadImage.Parent := BtnSingleProduct.Parent;
-  BtnTestBadImage.Align := TAlignLayout.Right;
+  BtnTestBadImage.Parent := HorzScrollBox1;
+  BtnTestBadImage.Align := TAlignLayout.Left;
   BtnTestBadImage.Width := 68;
-  BtnTestBadImage.Margins.Right := 4;
+  BtnTestBadImage.Margins.Left := 4;
   BtnTestBadImage.Margins.Top := 8;
   BtnTestBadImage.Margins.Bottom := 8;
+  BtnTestBadImage.Margins.Right := 8;
   BtnTestBadImage.Text := '坏图测试';
   BtnTestBadImage.OnClick := HandleBadImageClick;
 
