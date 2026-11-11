@@ -375,9 +375,11 @@ procedure TForm1.HandlePartialUpdateClick(Sender: TObject);
 var
   TargetItem: TObject;
   Prod: TProductItem;
+  Merch: TMerchantItem;
+  Order: TOrder;
 begin
   if FListView.Items.Count = 0 then Exit;
-  // 选取第 1 个单品进行等高属性变动
+  // 选取第 1 个单品/卡片进行等高属性变动
   TargetItem := FListView.Items[0];
   if TargetItem is TProductItem then
   begin
@@ -385,7 +387,21 @@ begin
     Prod.Price := Max(1.0, Prod.Price - 10.0);
     Prod.Title := '【热销点赞+1】' + BaseTitles[0];
     Prod.TagTop := '降价特惠';
-    // O(1) 等高局部刷新：不重排布局，原地零闪烁重绘
+    // O(1) 等高局部刷新：不重排布局，清除该项 DSL 编译树并原地零闪烁重绘
+    FListView.NotifyItemChanged(0, False);
+  end
+  else if TargetItem is TMerchantItem then
+  begin
+    Merch := TMerchantItem(TargetItem);
+    Merch.Title := '【爆款特惠】' + Merch.Title;
+    Merch.Rating := Min(5.0, Merch.Rating + 0.1);
+    FListView.NotifyItemChanged(0, False);
+  end
+  else if TargetItem is TOrder then
+  begin
+    Order := TOrder(TargetItem);
+    Order.StatusText := '已付款(局部秒刷)';
+    Order.TotalAmount := Max(0.01, Order.TotalAmount - 10.0);
     FListView.NotifyItemChanged(0, False);
   end;
 end;
@@ -707,7 +723,7 @@ begin
           ];
           ProdItem.ActiveImageIndex := 0;
           ProdItem.ImageScrollOffset := 0;
-          ProdItem.AutoCruise := False;
+          ProdItem.AutoCruise := (StartIdx = 1);
           LItems.Add(ProdItem);
 
           for J := StartIdx + 1 to StartIdx + 6 do

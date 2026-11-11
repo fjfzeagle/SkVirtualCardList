@@ -75,6 +75,7 @@ type
       AItem: TObject; const ARect: TRectF; AIsPressed: Boolean; APressedZoneID: Integer);
     function HitTestCard(AItem: TObject; const ARect: TRectF; const APoint: TPointF): Integer;
     procedure ClearCache;
+    procedure ClearItemCache(AItem: TObject);
 
     // 手势画廊轮播扩展协议
     function CanSwipeImage(AItem: TObject; AZoneID: Integer; out AWidth: Single): Boolean;
@@ -1106,10 +1107,16 @@ end;
 procedure TSkVirtualListView.NotifyItemChanged(const AIndex: Integer; const AHeightChanged: Boolean);
 var
   ItemRenderer: ISkCardRenderer;
+  AItem: TObject;
   OldH, NewH, DeltaH: Single;
   I: Integer;
 begin
   if (AIndex < 0) or (AIndex >= Length(FSlots)) or (AIndex >= FItems.Count) then Exit;
+
+  AItem := FItems[AIndex];
+  ItemRenderer := GetRendererForItem(AItem);
+  if ItemRenderer <> nil then
+    ItemRenderer.ClearItemCache(AItem);
 
   if not AHeightChanged then
   begin
@@ -1118,7 +1125,6 @@ begin
     Exit;
   end;
 
-  ItemRenderer := GetRendererForItem(FItems[AIndex]);
   if ItemRenderer = nil then Exit;
 
   OldH := FSlots[AIndex].Rect.Height;
@@ -1167,7 +1173,18 @@ begin
 end;
 
 procedure TSkVirtualListView.NotifyItemRangeChanged(const AStartIndex, ACount: Integer; const AHeightChanged: Boolean);
+var
+  I, EndIdx: Integer;
+  R: ISkCardRenderer;
 begin
+  EndIdx := Min(FItems.Count - 1, AStartIndex + ACount - 1);
+  for I := Max(0, AStartIndex) to EndIdx do
+  begin
+    R := GetRendererForItem(FItems[I]);
+    if R <> nil then
+      R.ClearItemCache(FItems[I]);
+  end;
+
   if not AHeightChanged then
     Redraw
   else

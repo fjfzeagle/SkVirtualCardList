@@ -393,6 +393,7 @@ type
     constructor Create(const ASpanCount: Integer = 1; const AItemHeight: Single = 142);
     destructor Destroy; override;
     procedure ClearCache; virtual;
+    procedure ClearItemCache(AItem: TObject); virtual;
     function GetSpanCount: Integer; virtual;
     function GetItemHeight(AContext: TSkRenderContext; AColWidth: Single; AItem: TObject = nil): Single; virtual;
     function BuildLayout(AItem: TObject): IUiNode; virtual; abstract;
@@ -2491,6 +2492,12 @@ end;
 procedure TDeclarativeCardRenderer.ClearCache;
 begin
   FCache.Clear;
+end;
+
+procedure TDeclarativeCardRenderer.ClearItemCache(AItem: TObject);
+begin
+  if AItem <> nil then
+    FCache.Remove(AItem);
 end;
 
 function TDeclarativeCardRenderer.GetSpanCount: Integer;
