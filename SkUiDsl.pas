@@ -465,10 +465,12 @@ begin
     // 区域高度充足时呈现重试小字
     if ARect.Height > 65 then
     begin
+      // 采用显式 Unicode 字符常量(#$70B9#$51FB#$91CD#$8BD5 = '点击重试')，100% 免疫任何环境代码页污染与无BOM乱码
+      const SRetryPrompt = #$70B9#$51FB#$91CD#$8BD5;
       LFont := AContext.Font(9.0, False);
-      TextW := LFont.MeasureText('点击重试');
+      TextW := LFont.MeasureText(SRetryPrompt);
       Baseline := BoxRect.Bottom + 12;
-      ACanvas.DrawSimpleText('点击重试', ARect.Left + (ARect.Width - TextW) / 2, Baseline, LFont, AContext.FillPaint($FF9AA0A6));
+      ACanvas.DrawSimpleText(SRetryPrompt, ARect.Left + (ARect.Width - TextW) / 2, Baseline, LFont, AContext.FillPaint($FF9AA0A6));
     end;
   end
   else if AState = isLoading then

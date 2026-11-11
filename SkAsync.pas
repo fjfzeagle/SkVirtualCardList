@@ -38,7 +38,8 @@ type
 
     procedure TriggerCallbacks;
   public
-    constructor Create(const AWorkerFunc: TFunc<T>);
+    // 值传递 AWorkerFunc，强制触发编译器对匿名方法接口的 AddRef，杜绝临时接口提前析构
+    constructor Create(AWorkerFunc: TFunc<T>);
     destructor Destroy; override;
 
     function OnSuccess(const ACallback: TProc<T>): IAsyncPromise<T>;
@@ -48,22 +49,22 @@ type
 
   TAsync = class
   public
-    // 启动后台线程异步执行任务，并返回流式 Promise 接口
-    class function Run<T>(const AWorkerFunc: TFunc<T>): IAsyncPromise<T>;
+    // 启动后台线程异步执行任务，并返回流式 Promise 接口 (值传递接管匿名方法生命周期)
+    class function Run<T>(AWorkerFunc: TFunc<T>): IAsyncPromise<T>;
   end;
 
 implementation
 
 { TAsync }
 
-class function TAsync.Run<T>(const AWorkerFunc: TFunc<T>): IAsyncPromise<T>;
+class function TAsync.Run<T>(AWorkerFunc: TFunc<T>): IAsyncPromise<T>;
 begin
   Result := TAsyncPromise<T>.Create(AWorkerFunc);
 end;
 
 { TAsyncPromise<T> }
 
-constructor TAsyncPromise<T>.Create(const AWorkerFunc: TFunc<T>);
+constructor TAsyncPromise<T>.Create(AWorkerFunc: TFunc<T>);
 var
   LTaskHolder: IAsyncPromise<T>;
 begin
@@ -80,16 +81,23 @@ begin
   TTask.Run(procedure
   var
     LQueueHolder: IAsyncPromise<T>;
+    LFunc: TFunc<T>;
   begin
     try
       try
-        // 核心：结果直接写入堆对象字段，不依赖任何子线程栈帧上的局部变量
-        FResultValue := FWorkerFunc();
+        // 核心：从堆对象字段取出工作委托执行，杜绝依赖任何栈帧残留
+        LFunc := FWorkerFunc;
+        if Assigned(LFunc) then
+          FResultValue := LFunc();
       except
         on E: Exception do
           FException := Exception(AcquireExceptionObject);
       end;
     finally
+      // 后台执行完毕后立即释放对业务委托的引用
+      FWorkerFunc := nil;
+      LFunc := nil;
+
       // 3. 将生命周期强引用安全接力转移至主线程队列闭包
       LQueueHolder := LTaskHolder;
       LTaskHolder := nil; // 释放子线程引用的闭包
