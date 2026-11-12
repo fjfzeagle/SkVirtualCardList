@@ -8,7 +8,7 @@ uses
   System.SyncObjs, System.Skia;
 
 type
-  TImageLoadedProc = reference to procedure;
+  TImageLoadedProc = TProc;
 
   // 图片加载生命周期状态
   TSkImageState = (
@@ -28,6 +28,7 @@ type
       TCallbackInfo = record
         Owner: TObject;
         Proc: TImageLoadedProc;
+        OwnerVersion: UInt64;
       end;
   private
     class var FCache: TDictionary<string, ISkImage>;
@@ -35,9 +36,12 @@ type
     class var FPendingCallbacks: TDictionary<string, TList<TCallbackInfo>>;
     class var FWaitingQueue: TList<string>;
     class var FActiveDownloads: Integer;
+    class var FShuttingDown: Boolean;
+    class var FNotificationsValid: TFunc<Boolean>;
+    class var FDisableNotifications: TProc;
     class var FLock: TObject;
     class var FDiskCacheDir: string;
-    class var FUnsubscribedOwners: TList<TObject>;
+    class var FOwnerVersions: TDictionary<TObject, UInt64>;
     class var FFailedUrls: TDictionary<string, UInt64>; // 失败冷却记录表 (防止弱网或404死循环重试)
 
     class constructor Create;
@@ -73,14 +77,25 @@ implementation
 { TSkImageCache }
 
 class constructor TSkImageCache.Create;
+var
+  NotificationsValid: Boolean;
 begin
+  NotificationsValid := True;
+  FNotificationsValid := function: Boolean
+  begin
+    Result := NotificationsValid;
+  end;
+  FDisableNotifications := procedure
+  begin
+    NotificationsValid := False;
+  end;
   FCache := TDictionary<string, ISkImage>.Create;
   FLruOrder := TList<string>.Create;
   FPendingCallbacks := TDictionary<string, TList<TCallbackInfo>>.Create;
   FWaitingQueue := TList<string>.Create;
   FActiveDownloads := 0;
   FLock := TObject.Create;
-  FUnsubscribedOwners := TList<TObject>.Create;
+  FOwnerVersions := TDictionary<TObject, UInt64>.Create;
   FFailedUrls := TDictionary<string, UInt64>.Create;
 
   FDiskCacheDir := TPath.Combine(TPath.GetCachePath, 'SkiaImgCache');
@@ -92,13 +107,24 @@ class destructor TSkImageCache.Destroy;
 var
   List: TList<TCallbackInfo>;
 begin
+  FDisableNotifications();
+  TMonitor.Enter(FLock);
+  try
+    FShuttingDown := True;
+    FWaitingQueue.Clear;
+    // 工作线程只 Queue，不等待 UI；退出前等待其停止访问缓存和锁
+    while FActiveDownloads > 0 do
+      TMonitor.Wait(FLock, 100);
+  finally
+    TMonitor.Exit(FLock);
+  end;
   for List in FPendingCallbacks.Values do
     List.Free;
   FPendingCallbacks.Free;
   FWaitingQueue.Free;
   FCache.Free;
   FLruOrder.Free;
-  FUnsubscribedOwners.Free;
+  FOwnerVersions.Free;
   FFailedUrls.Free;
   FLock.Free;
 end;
@@ -141,6 +167,7 @@ end;
 
 class function TSkImageCache.MemoryCount: Integer;
 begin
+  if FShuttingDown then Exit(0);
   TMonitor.Enter(FLock);
   try
     Result := FCache.Count;
@@ -151,6 +178,7 @@ end;
 
 class procedure TSkImageCache.ClearMemoryCache;
 begin
+  if FShuttingDown then Exit;
   TMonitor.Enter(FLock);
   try
     FCache.Clear;
@@ -166,12 +194,15 @@ var
   Url: string;
   CbList: TList<TCallbackInfo>;
   I: Integer;
+  Version: UInt64;
 begin
-  if AOwner = nil then Exit;
+  if (AOwner = nil) or FShuttingDown then Exit;
 
   TMonitor.Enter(FLock);
   try
-    FUnsubscribedOwners.Add(AOwner);
+    Version := 0;
+    FOwnerVersions.TryGetValue(AOwner, Version);
+    FOwnerVersions.AddOrSetValue(AOwner, Version + 1);
     for Url in FPendingCallbacks.Keys do
     begin
       CbList := FPendingCallbacks[Url];
@@ -200,13 +231,15 @@ var
   CbInfo: TCallbackInfo;
   CbList: TList<TCallbackInfo>;
   LastFailTime: UInt64;
+  I: Integer;
 begin
   Result := nil;
   AState := isNone;
-  if AUrl.Trim.IsEmpty then Exit;
+  if FShuttingDown or AUrl.Trim.IsEmpty then Exit;
 
   TMonitor.Enter(FLock);
   try
+    if FShuttingDown then Exit;
     // 0. 检查失败冷却记录表（20秒内失败过的 URL 暂不重复发起，防止网络风暴）
     if FFailedUrls.TryGetValue(AUrl, LastFailTime) then
     begin
@@ -230,12 +263,21 @@ begin
     AState := isLoading;
     CbInfo.Owner := AOwner;
     CbInfo.Proc := AOnLoaded;
+    CbInfo.OwnerVersion := 0;
+    if AOwner <> nil then
+      FOwnerVersions.TryGetValue(AOwner, CbInfo.OwnerVersion);
 
     if FPendingCallbacks.TryGetValue(AUrl, CbList) then
     begin
       // 正在排队或下载中，仅追加回调即可，避免重复发起请求
+      // 【关键性能优化】：同一 Owner 对同一 URL 仅保留一份重绘订阅，彻底杜绝 60fps 堆积
       if Assigned(AOnLoaded) then
+      begin
+        if AOwner <> nil then
+          for I := 0 to CbList.Count - 1 do
+            if CbList[I].Owner = AOwner then Exit;
         CbList.Add(CbInfo);
+      end;
       Exit;
     end;
 
@@ -256,26 +298,27 @@ class procedure TSkImageCache.RetryUrl(const AUrl: string);
 var
   DiskFile: string;
 begin
-  if AUrl.Trim.IsEmpty then Exit;
+  if FShuttingDown or AUrl.Trim.IsEmpty then Exit;
   TMonitor.Enter(FLock);
   try
     FFailedUrls.Remove(AUrl);
+    // 同时清理可能下载坏掉的本地磁盘脏文件
+    DiskFile := GetDiskCacheFilePath(AUrl);
+    if TFile.Exists(DiskFile) then
+    begin
+      try
+        TFile.Delete(DiskFile);
+      except
+      end;
+    end;
   finally
     TMonitor.Exit(FLock);
-  end;
-
-  DiskFile := GetDiskCacheFilePath(AUrl);
-  if TFile.Exists(DiskFile) then
-  begin
-    try
-      TFile.Delete(DiskFile);
-    except
-    end;
   end;
 end;
 
 class function TSkImageCache.HasActiveDownloads: Boolean;
 begin
+  if FShuttingDown then Exit(False);
   TMonitor.Enter(FLock);
   try
     Result := (FActiveDownloads > 0) or (FWaitingQueue.Count > 0);
@@ -289,7 +332,7 @@ var
   NextUrl: string;
 begin
   // 必须在 FLock 保护下调用
-  while (FActiveDownloads < MAX_CONCURRENT_DOWNLOADS) and (FWaitingQueue.Count > 0) do
+  while (not FShuttingDown) and (FActiveDownloads < MAX_CONCURRENT_DOWNLOADS) and (FWaitingQueue.Count > 0) do
   begin
     NextUrl := FWaitingQueue[0];
     FWaitingQueue.Delete(0);
@@ -363,19 +406,23 @@ begin
         else
           FFailedUrls.AddOrSetValue(AUrl, TThread.GetTickCount64);
 
+        if not FShuttingDown then
+          NotifyLoaded(AUrl);
         Dec(FActiveDownloads);
         DispatchNextDownload;
+        TMonitor.PulseAll(FLock);
       finally
         TMonitor.Exit(FLock);
       end;
-
-      NotifyLoaded(AUrl);
     end;
   end);
 end;
 
 class procedure TSkImageCache.NotifyLoaded(const AUrl: string);
+var
+  NotificationsValid: TFunc<Boolean>;
 begin
+  NotificationsValid := FNotificationsValid;
   // 回到主线程安全执行回调
   TThread.Queue(nil, procedure
   var
@@ -383,7 +430,9 @@ begin
     Cb: TCallbackInfo;
     I: Integer;
     CanInvoke: Boolean;
+    Version: UInt64;
   begin
+    if not NotificationsValid() then Exit;
     CbList := nil;
     TMonitor.Enter(FLock);
     try
@@ -404,8 +453,9 @@ begin
         begin
           TMonitor.Enter(FLock);
           try
-            if FUnsubscribedOwners.Contains(Cb.Owner) then
-              CanInvoke := False;
+            Version := 0;
+            FOwnerVersions.TryGetValue(Cb.Owner, Version);
+            CanInvoke := Version = Cb.OwnerVersion;
           finally
             TMonitor.Exit(FLock);
           end;

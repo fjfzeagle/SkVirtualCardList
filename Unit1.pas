@@ -34,6 +34,12 @@ type
     BtnTestPartial: TButton;
     BtnTestBadImage: TButton;
     FSimulateError: Boolean;
+    FLoadTimer: TTimer;
+    FInvalidateRequest: TProc;
+
+    function NewRequest: TFunc<Boolean>;
+    procedure BeginLoadMode(const AMode: TViewMode; const ADelayMs: Integer);
+    procedure HandleLoadTimer(Sender: TObject);
 
     procedure LoadProductData;
     procedure LoadMerchantData;
@@ -49,6 +55,7 @@ type
     procedure HandlePartialUpdateClick(Sender: TObject);
     procedure HandleBadImageClick(Sender: TObject);
   public
+    destructor Destroy; override;
     procedure MouseWheel(Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean); override;
   end;
 
@@ -245,90 +252,88 @@ begin
 
   Randomize;
 
-  // 默认启动进入“同屏混排”模式，先展示 600ms 骨架屏，再异步呈现混排数据流
-  FCurrentMode := vmMixed;
-  FListView.IsLoading := True;
-  FListView.UpdateLayout;
+  FLoadTimer := TTimer.Create(Self);
+  FLoadTimer.Enabled := False;
+  FLoadTimer.OnTimer := HandleLoadTimer;
+  BeginLoadMode(vmMixed, 600);
+end;
 
-  TThread.CreateAnonymousThread(procedure
+destructor TForm1.Destroy;
+begin
+  if FLoadTimer <> nil then FLoadTimer.Enabled := False;
+  if Assigned(FInvalidateRequest) then FInvalidateRequest();
+  inherited Destroy;
+end;
+
+function TForm1.NewRequest: TFunc<Boolean>;
+var
+  Valid: Boolean;
+begin
+  if Assigned(FInvalidateRequest) then FInvalidateRequest();
+  Valid := True;
+  // 两个闭包共享状态，不捕获窗体；窗体销毁后仍可安全检查并释放过期结果
+  FInvalidateRequest := procedure
   begin
-    Sleep(600);
-    TThread.Synchronize(nil, procedure
-    begin
-      LoadMixedData;
-    end);
-  end).Start;
+    Valid := False;
+  end;
+  Result := function: Boolean
+  begin
+    Result := Valid;
+  end;
+end;
+
+procedure TForm1.BeginLoadMode(const AMode: TViewMode; const ADelayMs: Integer);
+begin
+  FLoadTimer.Enabled := False;
+  if Assigned(FInvalidateRequest) then FInvalidateRequest();
+  FCurrentMode := AMode;
+  FListView.IsLoading := True;
+  FListView.Clear;
+  FListView.PageSize := 20;
+  case AMode of
+    vmProduct: FListView.Renderer := FRendererProduct;
+    vmMerchant: FListView.Renderer := FRendererMerchant;
+    vmOrder:
+      begin
+        FListView.Renderer := FRendererOrder;
+        FListView.PageSize := 5;
+      end;
+  else
+    FListView.Renderer := nil;
+  end;
+  FLoadTimer.Interval := ADelayMs;
+  FLoadTimer.Enabled := True;
+end;
+
+procedure TForm1.HandleLoadTimer(Sender: TObject);
+begin
+  FLoadTimer.Enabled := False;
+  case FCurrentMode of
+    vmProduct: LoadProductData;
+    vmMerchant: LoadMerchantData;
+    vmOrder: LoadOrderData;
+    vmMixed: LoadMixedData;
+  end;
 end;
 
 procedure TForm1.BtnSingleProductClick(Sender: TObject);
 begin
-  FCurrentMode := vmProduct;
-  FListView.Clear;
-  FListView.Renderer := FRendererProduct;
-  FListView.IsLoading := True;
-  FListView.UpdateLayout;
-
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(350);
-    TThread.Synchronize(nil, procedure
-    begin
-      LoadProductData;
-    end);
-  end).Start;
+  BeginLoadMode(vmProduct, 350);
 end;
 
 procedure TForm1.BtnDoubleMerchantClick(Sender: TObject);
 begin
-  FCurrentMode := vmMerchant;
-  FListView.Clear;
-  FListView.Renderer := FRendererMerchant;
-  FListView.IsLoading := True;
-  FListView.UpdateLayout;
-
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(350);
-    TThread.Synchronize(nil, procedure
-    begin
-      LoadMerchantData;
-    end);
-  end).Start;
+  BeginLoadMode(vmMerchant, 350);
 end;
 
 procedure TForm1.BtnMixedClick(Sender: TObject);
 begin
-  FCurrentMode := vmMixed;
-  FListView.Clear;
-  FListView.IsLoading := True;
-  FListView.UpdateLayout;
-
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(350);
-    TThread.Synchronize(nil, procedure
-    begin
-      LoadMixedData;
-    end);
-  end).Start;
+  BeginLoadMode(vmMixed, 350);
 end;
 
 procedure TForm1.BtnOrderClick(Sender: TObject);
 begin
-  FCurrentMode := vmOrder;
-  FListView.Clear;
-  FListView.Renderer := FRendererOrder;
-  FListView.IsLoading := True;
-  FListView.UpdateLayout;
-
-  TThread.CreateAnonymousThread(procedure
-  begin
-    Sleep(300);
-    TThread.Synchronize(nil, procedure
-    begin
-      LoadOrderData;
-    end);
-  end).Start;
+  BeginLoadMode(vmOrder, 300);
 end;
 
 procedure TForm1.LoadOrderData;
@@ -560,7 +565,7 @@ begin
   FListView.Clear;
   FListView.Renderer := FRendererMerchant;
 
-  for I := 1 to 60 do
+  for I := 1 to 20 do
   begin
     Item := TMerchantItem.Create;
     Item.ID := I.ToString;
@@ -631,8 +636,8 @@ begin
     FListView.Items.Add(ProdItem);
   end;
 
-  // 2. 紧接着插入 30 家双列网格店铺卡 (SpanCount = 2)
-  for I := 1 to 30 do
+  // 2. 紧接着插入 18 家双列网格店铺卡 (SpanCount = 2, 凑满首屏20项)
+  for I := 1 to 18 do
   begin
     MerchItem := TMerchantItem.Create;
     MerchItem.ID := 'M_' + I.ToString;
@@ -654,7 +659,17 @@ begin
 end;
 
 procedure TForm1.HandlePageFetch(Sender: TObject; const APage: Integer; const AIsRefresh: Boolean);
+var
+  Mode: TViewMode;
+  FetchPageSize: Integer;
+  IsSimulateError: Boolean;
+  IsCurrent: TFunc<Boolean>;
 begin
+  Mode := FCurrentMode;
+  FetchPageSize := FListView.PageSize;
+  IsSimulateError := FSimulateError;
+  IsCurrent := NewRequest();
+
   // 使用轻量原生执行器 TAsync.Run 异步调度后台线程池调用接口
   TAsync.Run<TArray<TObject>>(
     function: TArray<TObject>
@@ -680,7 +695,7 @@ begin
       Sleep(350);
 
       // 故障注入测试：若用户开启了“故障模拟”开关，在后台抛出网络或接口异常
-      if FSimulateError then
+      if IsSimulateError then
         raise Exception.Create('远程接口请求超时 [HTTP 504 Gateway Timeout]，服务器无响应！');
 
       LItems := TList<TObject>.Create;
@@ -689,11 +704,11 @@ begin
         if AIsRefresh then
           StartIdx := 1
         else
-          StartIdx := (APage - 1) * 10 + 1;
+          StartIdx := (APage - 1) * FetchPageSize + 1;
 
-        if FCurrentMode = vmProduct then
+        if Mode = vmProduct then
         begin
-          for J := StartIdx to StartIdx + 9 do
+          for J := StartIdx to StartIdx + FetchPageSize - 1 do
           begin
             ProdItem := TProductItem.Create;
             ProdItem.ID := J.ToString;
@@ -720,9 +735,9 @@ begin
             LItems.Add(ProdItem);
           end;
         end
-        else if FCurrentMode = vmMerchant then
+        else if Mode = vmMerchant then
         begin
-          for J := StartIdx to StartIdx + 9 do
+          for J := StartIdx to StartIdx + FetchPageSize - 1 do
           begin
             MerchItem := TMerchantItem.Create;
             MerchItem.ID := J.ToString;
@@ -735,13 +750,13 @@ begin
             LItems.Add(MerchItem);
           end;
         end
-        else if FCurrentMode = vmOrder then
+        else if Mode = vmOrder then
         begin
-          for J := 1 to 3 do
+          for J := 1 to FetchPageSize do
           begin
-            NewOrder := TOrder.Create('YT20261103' + Format('%.4d', [StartIdx + J]), '2026-11-03', '已完成');
-            NewOrder.AddDetail(Format('追加商品(第%d页) - ', [APage]) + BaseTitles[(StartIdx + J) mod 8],
-              ProductImages[(StartIdx + J) mod 8], '规格标准版', Prices[(StartIdx + J) mod 8], 1 + (J mod 2));
+            NewOrder := TOrder.Create('YT20261103' + Format('%.4d', [StartIdx + J - 1]), '2026-11-03', '已完成');
+            NewOrder.AddDetail(Format('追加商品(第%d页) - ', [APage]) + BaseTitles[(StartIdx + J - 1) mod 8],
+              ProductImages[(StartIdx + J - 1) mod 8], '规格标准版', Prices[(StartIdx + J - 1) mod 8], 1 + (J mod 2));
             if J mod 2 = 0 then
               NewOrder.AddDetail('赠品 - 蒙牛纯牛奶250ml', ProductImages[7], '随单赠送', 0.0, 1);
             LItems.Add(NewOrder);
@@ -774,7 +789,7 @@ begin
           ProdItem.AutoCruise := (StartIdx = 1);
           LItems.Add(ProdItem);
 
-          for J := StartIdx + 1 to StartIdx + 6 do
+          for J := StartIdx + 1 to StartIdx + FetchPageSize - 1 do
           begin
             MerchItem := TMerchantItem.Create;
             MerchItem.ID := 'M_' + J.ToString;
@@ -798,6 +813,12 @@ begin
       Item: TObject;
       HasNextPage: Boolean;
     begin
+      // 过期结果仍归此请求所有，不能写入新页面或访问已销毁的窗体
+      if not IsCurrent() then
+      begin
+        for Item in AItems do Item.Free;
+        Exit;
+      end;
       // 2. 【UI 主线程安全回调】渲染数据到列表
       if AIsRefresh then
         FListView.Clear;
@@ -811,7 +832,8 @@ begin
     end)
     .OnError(procedure(E: Exception)
     begin
-      // 3. 【UI 主线程安全回调】拦截异常、弹窗提示并收敛分页状态
+      if not IsCurrent() then Exit;
+      // 失败只解除加载状态，保留页码和 HasMore 供下一次滚动重试
       FListView.FinishFetch(False, False);
       TDialogService.ShowMessage('接口拉取失败: ' + E.Message);
     end);
@@ -821,7 +843,42 @@ procedure TForm1.HandleItemClick(Sender: TObject; AIndex: Integer; AItem: TObjec
 var
   Product: TProductItem;
   Merchant: TMerchantItem;
+  ImageUrl: string;
+  ImageState: TSkImageState;
+  DetailIndex: Integer;
 begin
+  ImageUrl := '';
+  if AZoneID = ZONE_IMAGE_CAROUSEL then
+  begin
+    if AItem is TProductItem then
+    begin
+      Product := TProductItem(AItem);
+      if Length(Product.Images) > 0 then
+        ImageUrl := Product.Images[EnsureRange(Product.ActiveImageIndex, 0, High(Product.Images))]
+      else
+        ImageUrl := Product.ImageUrl;
+    end
+    else if AItem is TMerchantItem then
+      ImageUrl := TMerchantItem(AItem).ImageUrl;
+  end
+  else if (AItem is TOrder) and (AZoneID >= ZONE_ORDER_IMAGE_BASE) then
+  begin
+    DetailIndex := AZoneID - ZONE_ORDER_IMAGE_BASE;
+    if DetailIndex < TOrder(AItem).Details.Count then
+      ImageUrl := TOrder(AItem).Details[DetailIndex].ImageUrl;
+  end;
+
+  if not ImageUrl.IsEmpty then
+  begin
+    TSkImageCache.GetImageEx(ImageUrl, FListView.Context, nil, ImageState);
+    if ImageState = isFailed then
+    begin
+      TSkImageCache.RetryUrl(ImageUrl);
+      FListView.Redraw;
+      Exit;
+    end;
+  end;
+
   if AItem is TProductItem then
   begin
     Product := TProductItem(AItem);
@@ -832,14 +889,9 @@ begin
     end
     else if AZoneID = ZONE_IMAGE_CAROUSEL then
     begin
-      // 若当前图片包含 404 或失效，触发重试下载并无感刷新
-      if Product.ImageUrl.Contains('404') then
-      begin
-        TSkImageCache.RetryUrl(Product.ImageUrl);
-        FListView.NotifyItemChanged(AIndex, False);
-      end;
       TDialogService.ShowMessage('点击了商品多图轮播画廊: ' + Product.Title +
-        Format(' (当前显示第 %d/3 张图，可直接在图片上左右划动切换)', [Product.ActiveImageIndex + 1]));
+        Format(' (当前显示第 %d/%d 张图，可直接在图片上左右划动切换)',
+          [Product.ActiveImageIndex + 1, Max(1, Length(Product.Images))]));
     end
     else
     begin

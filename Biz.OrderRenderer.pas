@@ -24,6 +24,8 @@ const
 
   ZONE_BTN_PAY        = 103; // 立即支付
 
+  ZONE_ORDER_IMAGE_BASE = 2000; // 加上明细索引，定位失败图片重试
+
 
 
 type
@@ -196,7 +198,7 @@ begin
 
           .Children([
 
-            AsyncImage(Detail.ImageUrl).Size(56, 56).Radius(6),
+            AsyncImage(Detail.ImageUrl).Size(56, 56).Radius(6).OnClick(ZONE_ORDER_IMAGE_BASE + I),
 
             VStack.Spacing(4).Flex(1)
 

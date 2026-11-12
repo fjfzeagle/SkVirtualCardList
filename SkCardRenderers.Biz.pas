@@ -54,8 +54,12 @@ type
   TSingleProductCardRenderer = class(TDeclarativeCardRenderer)
   private
     FMultiLineAddress: Boolean;
+    FImageNodes: TDictionary<TObject, IUiNode>; // 保留轮播节点，动画只更新其状态
   public
     constructor Create;
+    destructor Destroy; override;
+    procedure ClearCache; override;
+    procedure ClearItemCache(AItem: TObject); override;
     function GetItemHeight(AContext: TSkRenderContext; AColWidth: Single; AItem: TObject = nil): Single; override;
     function BuildLayout(AItem: TObject): IUiNode; override;
     function CanSwipeImage(AItem: TObject; AZoneID: Integer; out AWidth: Single): Boolean; override;
@@ -94,6 +98,25 @@ constructor TSingleProductCardRenderer.Create;
 begin
   inherited Create(1, 142); // 1 列通栏，基准高度 142
   FMultiLineAddress := False;
+  FImageNodes := TDictionary<TObject, IUiNode>.Create;
+end;
+
+destructor TSingleProductCardRenderer.Destroy;
+begin
+  FImageNodes.Free;
+  inherited Destroy;
+end;
+
+procedure TSingleProductCardRenderer.ClearCache;
+begin
+  FImageNodes.Clear;
+  inherited ClearCache;
+end;
+
+procedure TSingleProductCardRenderer.ClearItemCache(AItem: TObject);
+begin
+  FImageNodes.Remove(AItem);
+  inherited ClearItemCache(AItem);
 end;
 
 function TSingleProductCardRenderer.GetItemHeight(AContext: TSkRenderContext; AColWidth: Single; AItem: TObject): Single;
@@ -158,12 +181,14 @@ end;
 procedure TSingleProductCardRenderer.OnImageSwipe(AItem: TObject; const ADeltaX: Single);
 var
   P: TProductItem;
+  ImageNode: IUiNode;
 begin
   if AItem is TProductItem then
   begin
     P := TProductItem(AItem);
     P.ImageScrollOffset := ADeltaX;
-    inherited OnImageSwipe(AItem, ADeltaX);
+    if FImageNodes.TryGetValue(AItem, ImageNode) then
+      (ImageNode as TCarouselNode).ScrollOffset(ADeltaX);
   end;
 end;
 
@@ -171,6 +196,7 @@ procedure TSingleProductCardRenderer.OnImageSwipeEnd(AItem: TObject; const ADelt
 var
   P: TProductItem;
   EffectiveW: Single;
+  ImageNode: IUiNode;
 begin
   if AItem is TProductItem then
   begin
@@ -192,7 +218,8 @@ begin
     end;
 
     P.ImageScrollOffset := 0;
-    inherited OnImageSwipeEnd(AItem, ADeltaX, AImgWidth);
+    if FImageNodes.TryGetValue(AItem, ImageNode) then
+      (ImageNode as TCarouselNode).ActiveIndex(P.ActiveImageIndex).ScrollOffset(0);
   end;
 end;
 
@@ -239,6 +266,7 @@ end;
 procedure TSingleProductCardRenderer.OnImageSwipeFinished(AItem: TObject; const AIndexDelta: Integer);
 var
   P: TProductItem;
+  ImageNode: IUiNode;
 begin
   if AItem is TProductItem then
   begin
@@ -252,7 +280,8 @@ begin
         P.ActiveImageIndex := High(P.Images);
     end;
     P.ImageScrollOffset := 0;
-    inherited OnImageSwipeFinished(AItem, AIndexDelta);
+    if FImageNodes.TryGetValue(AItem, ImageNode) then
+      (ImageNode as TCarouselNode).ActiveIndex(P.ActiveImageIndex).ScrollOffset(0);
   end;
 end;
 
@@ -264,6 +293,7 @@ var
   PriceRowChildren: TArray<IUiNode>;
   RoadRowChildren: TArray<IUiNode>;
   ImageNode: IUiNode;
+  CarouselNode: TCarouselNode;
 begin
   P := TProductItem(AItem);
   PriceStr := Format('¥%.1f', [P.Price]);
@@ -317,14 +347,18 @@ begin
 
   // 4. 构建左侧封面图（支持多图横向手势画廊 + 分页圆点 + 角标 + 保障横条）
   if Length(P.Images) > 0 then
-    ImageNode := Carousel(P.Images, Self)
+  begin
+    CarouselNode := Carousel(P.Images, Self);
+    FImageNodes.AddOrSetValue(AItem, CarouselNode);
+    ImageNode := CarouselNode
       .Size(96, 114).Radius(6)
       .AutoCruise(P.AutoCruise)
       .ActiveIndex(P.ActiveImageIndex)
       .ScrollOffset(P.ImageScrollOffset)
       .Badge(P.TagTop)
       .BottomBar(P.BottomTag)
-      .OnClick(ZONE_IMAGE_CAROUSEL)
+      .OnClick(ZONE_IMAGE_CAROUSEL);
+  end
   else
     ImageNode := AsyncImage(P.ImageUrl, Self)
       .Size(96, 114).Radius(6)
@@ -438,7 +472,7 @@ begin
   Result := Box.Fill(TAlphaColors.White).Radius(8).Shadow(True).Children([
     VStack.Spacing(0).Children([
       // 1. 顶部封面图：横向撑满卡片宽度，顶部两角设为 8 圆角贴合卡片，高度 115
-      AsyncImage(M.ImageUrl).Height(115).RadiusTop(8).FillWidth(True),
+      AsyncImage(M.ImageUrl).Height(115).RadiusTop(8).FillWidth(True).OnClick(ZONE_IMAGE_CAROUSEL),
 
       // 2. 底部店铺图文信息区：设置舒适的独立内边距
       VStack.Padding(8, 6, 8, 8).Spacing(4).Children(VNodes)

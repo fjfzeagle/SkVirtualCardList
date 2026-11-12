@@ -186,19 +186,18 @@ begin
   FErrorCallback := nil;
   FFinallyCallback := nil;
 
-  if FException <> nil then
-  begin
-    if Assigned(LError) then
-      LError(FException);
-  end
-  else
-  begin
-    if Assigned(LSuccess) then
+  try
+    if FException <> nil then
+    begin
+      if Assigned(LError) then
+        LError(FException);
+    end
+    else if Assigned(LSuccess) then
       LSuccess(FResultValue);
+  finally
+    if Assigned(LFinally) then
+      LFinally();
   end;
-
-  if Assigned(LFinally) then
-    LFinally();
 end;
 
 end.

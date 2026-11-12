@@ -1399,7 +1399,7 @@ begin
   FColor := $FF333333;
   FBold := False;
   FStrikethrough := False;
-  FMaxLines := 1;
+  FMaxLines := 0; // 0 表示不限行数；不换行时按单行省略
   FWrap := False;
 end;
 
@@ -1519,7 +1519,9 @@ end;
 
 function TTextNode.MaxLines(const AVal: Integer): TTextNode;
 begin
-  FMaxLines := AVal;
+  FMaxLines := Max(0, AVal);
+  if FMaxLines > 1 then
+    FWrap := True;
   Result := Self;
 end;
 
@@ -1551,7 +1553,10 @@ begin
   else
   begin
     Lines := SplitTextLines(FText, LFont, AMaxWidth);
-    FDesiredSize := TSizeF.Create(AMaxWidth, Max(1, Length(Lines)) * SingleLineH);
+    if FMaxLines > 0 then
+      FDesiredSize := TSizeF.Create(AMaxWidth, Max(1, Min(FMaxLines, Length(Lines))) * SingleLineH)
+    else
+      FDesiredSize := TSizeF.Create(AMaxWidth, Max(1, Length(Lines)) * SingleLineH);
   end;
   Result := FDesiredSize;
 end;
@@ -1562,7 +1567,7 @@ var
   LPaint: ISkPaint;
   BaselineY, LineH, CurY: Single;
   Lines: TArray<string>;
-  I: Integer;
+  I, LineCount: Integer;
   M: TSkFontMetrics;
   TextW, StrikeY: Single;
 begin
@@ -1576,11 +1581,8 @@ begin
   if not FWrap then
   begin
     BaselineY := AContext.GetCenterBaseline(LFont, FLayoutBounds);
-    if FMaxLines = 1 then
-      AContext.DrawEllipsisText(ACanvas, FText, FLayoutBounds.Left, BaselineY,
-        FLayoutBounds.Width, FFontSize, FColor, FBold)
-    else
-      AContext.DrawFastText(ACanvas, FText, FLayoutBounds, FFontSize, FColor, FBold, True, False);
+    AContext.DrawEllipsisText(ACanvas, FText, FLayoutBounds.Left, BaselineY,
+      FLayoutBounds.Width, FFontSize, FColor, FBold);
 
     if FStrikethrough and (FLayoutBounds.Width > 0) then
     begin
@@ -1593,11 +1595,18 @@ begin
   else
   begin
     Lines := SplitTextLines(FText, LFont, FLayoutBounds.Width);
+    LineCount := Length(Lines);
+    if FMaxLines > 0 then
+      LineCount := Min(LineCount, FMaxLines);
     CurY := FLayoutBounds.Top - M.Ascent;
-    for I := 0 to High(Lines) do
+    for I := 0 to LineCount - 1 do
     begin
       if (I > 0) and (CurY + M.Descent > FLayoutBounds.Bottom + 6) then Break;
-      ACanvas.DrawSimpleText(Lines[I], FLayoutBounds.Left, CurY, LFont, LPaint);
+      if (I = LineCount - 1) and (LineCount < Length(Lines)) then
+        AContext.DrawEllipsisText(ACanvas, Lines[I] + '...', FLayoutBounds.Left, CurY,
+          FLayoutBounds.Width, FFontSize, FColor, FBold)
+      else
+        ACanvas.DrawSimpleText(Lines[I], FLayoutBounds.Left, CurY, LFont, LPaint);
       CurY := CurY + LineH;
     end;
   end;
@@ -1854,13 +1863,7 @@ begin
   if (FLayoutBounds.Width <= 0) or (FLayoutBounds.Height <= 0) then Exit;
 
   // 1. 尝试从二级缓存加载，并获取三态生命周期
-  LImg := TSkImageCache.GetImageEx(FUrl, FOwner, procedure
-  begin
-    if (AContext <> nil) and Assigned(AContext.OnNeedRedraw) then
-      AContext.OnNeedRedraw()
-    else if (FOwner <> nil) and (FOwner is TSkVirtualListView) then
-      TSkVirtualListView(FOwner).Redraw;
-  end, LImgState);
+  LImg := TSkImageCache.GetImageEx(FUrl, AContext, AContext.OnNeedRedraw, LImgState);
 
   ACanvas.Save;
   try
@@ -2116,7 +2119,7 @@ end;
 
 procedure TCarouselNode.Draw(const ACanvas: ISkCanvas; AContext: TSkRenderContext);
 var
-  I, SafeActiveIndex: Integer;
+  I, ImageIndex, SafeActiveIndex: Integer;
   ImgW, ImgH, BaseOffsetX, CurLeft, CurRight: Single;
   CurImgRect, SrcRect, TagRect, BarRect: TRectF;
   LImg: ISkImage;
@@ -2146,24 +2149,23 @@ begin
 
     // 2. 计算基准 X 偏移量 (安全防御：索引必须收敛在有效边界 [0 .. High(FImages)] 内，杜绝越界偏出视口致白屏)
     SafeActiveIndex := EnsureRange(FActiveIndex, 0, Max(0, High(FImages)));
-    BaseOffsetX := -(SafeActiveIndex * ImgW) + FScrollOffset;
+    if Length(FImages) = 1 then
+      BaseOffsetX := 0
+    else
+      BaseOffsetX := EnsureRange(FScrollOffset, -ImgW, ImgW);
 
-    // 3. 绘制落在可视边界内的图片
-    for I := 0 to High(FImages) do
+    // 3. 仅绘制当前图及循环相邻图（-1, 0, 1），首尾循环平滑衔接
+    for I := -1 to 1 do
     begin
+      if (Length(FImages) = 1) and (I <> 0) then Continue;
+      ImageIndex := (SafeActiveIndex + I + Length(FImages)) mod Length(FImages);
       CurLeft := FLayoutBounds.Left + BaseOffsetX + (I * ImgW);
       CurRight := CurLeft + ImgW;
 
       if (CurRight > FLayoutBounds.Left) and (CurLeft < FLayoutBounds.Right) then
       begin
         CurImgRect := RectF(CurLeft, FLayoutBounds.Top, CurRight, FLayoutBounds.Bottom);
-        LImg := TSkImageCache.GetImageEx(FImages[I], FOwner, procedure
-        begin
-          if (AContext <> nil) and Assigned(AContext.OnNeedRedraw) then
-            AContext.OnNeedRedraw()
-          else if (FOwner <> nil) and (FOwner is TSkVirtualListView) then
-            TSkVirtualListView(FOwner).Redraw;
-        end, LImgState);
+        LImg := TSkImageCache.GetImageEx(FImages[ImageIndex], AContext, AContext.OnNeedRedraw, LImgState);
 
         if LImg <> nil then
         begin
@@ -2195,13 +2197,8 @@ begin
     // 3.1 预热加载相邻下一张轮播图片，保障自动巡航与手势滑切时 0 延迟、0 白屏
     if Length(FImages) > 1 then
     begin
-      TSkImageCache.GetImage(FImages[(FActiveIndex + 1) mod Length(FImages)], FOwner, procedure
-      begin
-        if (AContext <> nil) and Assigned(AContext.OnNeedRedraw) then
-          AContext.OnNeedRedraw()
-        else if (FOwner <> nil) and (FOwner is TSkVirtualListView) then
-          TSkVirtualListView(FOwner).Redraw;
-      end);
+      TSkImageCache.GetImage(FImages[(SafeActiveIndex + 1) mod Length(FImages)],
+        AContext, AContext.OnNeedRedraw);
     end;
 
     // 4. 底部现代胶囊分页指示器 (半透明黑底胶囊 + 灵动亮白长条)

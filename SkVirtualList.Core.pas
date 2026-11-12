@@ -282,6 +282,8 @@ end;
 
 destructor TSkRenderContext.Destroy;
 begin
+  TSkImageCache.Unsubscribe(Self);
+  FOnNeedRedraw := nil;
   FSvgCache.Free;
   inherited Destroy;
 end;
@@ -849,7 +851,7 @@ procedure TSkVirtualListView.CheckLoadMore;
 var
   TotalH: Single;
 begin
-  if (not FIsLoadingMore) and FHasMore and (Assigned(FOnLoadMore) or Assigned(FOnPageFetch)) then
+  if (not FIsLoading) and (not FIsRefreshing) and (not FIsLoadingMore) and FHasMore and (Assigned(FOnLoadMore) or Assigned(FOnPageFetch)) then
   begin
     TotalH := GetTotalContentHeight;
     // 【核心修复 2】提前预留 1.2 倍视口高度进行静默拉取，绝不触碰底部的越界回弹物理区
@@ -913,7 +915,19 @@ procedure TSkVirtualListView.Clear;
 var
   Pair: TPair<TClass, ISkCardRenderer>;
 begin
+  FAniCalculations.Animation := False;
+  FAniCalculations.Animation := True;
   FActiveSnaps.Clear;
+  FActiveSwipeItem := nil;
+  FTouchMode := tmNone;
+  FPressedIndex := -1;
+  FPressedZoneID := -1;
+  FIsScrollingToTop := False;
+  FIsLoadingMore := False;
+  FIsRefreshing := False;
+  if FIsMouseDown or FBackToTopPressed then ReleaseCapture;
+  FBackToTopPressed := False;
+  FIsMouseDown := False;
   FItems.Clear;
   FPageIndex := 1;
   FTargetPageIndex := 1;
@@ -923,6 +937,7 @@ begin
   for Pair in FRendererMap do
     Pair.Value.ClearCache;
   UpdateLayout;
+  ScrollToTop;
 end;
 
 procedure TSkVirtualListView.FinishRefreshing;
@@ -943,11 +958,12 @@ end;
 
 procedure TSkVirtualListView.FinishFetch(const ASuccess: Boolean; const AHasMore: Boolean);
 begin
+  if ASuccess then
+    FHasMore := AHasMore;
   if FIsRefreshing then
   begin
     if ASuccess then
       FPageIndex := 1;
-    FHasMore := AHasMore;
     FinishRefreshing;
     UpdateLayout;
   end
@@ -955,24 +971,24 @@ begin
   begin
     if ASuccess then
       FPageIndex := FTargetPageIndex;
-    FHasMore := AHasMore;
     FIsLoadingMore := False;
-    UpdateLayout;
+    if ASuccess and (FItems.Count > Length(FSlots)) then
+      NotifyItemsAppended(FItems.Count - Length(FSlots))
+    else
+      UpdateLayout;
   end
   else
-  begin
-    FHasMore := AHasMore;
     UpdateLayout;
-  end;
 end;
 
 procedure TSkVirtualListView.FinishFetch(const ANewItemsCount: Integer; const ASuccess: Boolean);
 begin
+  if ASuccess then
+    FHasMore := (ANewItemsCount >= FPageSize);
   if FIsRefreshing then
   begin
     if ASuccess then
       FPageIndex := 1;
-    FHasMore := (ANewItemsCount >= FPageSize);
     FinishRefreshing;
     UpdateLayout;
   end
@@ -980,7 +996,6 @@ begin
   begin
     if ASuccess then
       FPageIndex := FTargetPageIndex;
-    FHasMore := (ANewItemsCount >= FPageSize);
     FIsLoadingMore := False;
     if ASuccess and (ANewItemsCount > 0) then
       NotifyItemsAppended(ANewItemsCount) // 增量追加，跳过历史卡片排版
@@ -988,10 +1003,7 @@ begin
       UpdateLayout;
   end
   else
-  begin
-    FHasMore := (ANewItemsCount >= FPageSize);
     UpdateLayout;
-  end;
 end;
 
 procedure TSkVirtualListView.UpdateScrollTargets;
@@ -1392,7 +1404,7 @@ begin
       FAniCalculations.MouseUp(X, Y);
 
       // 下拉刷新判定：若下拉超过 50px 且松手
-      if FEnablePullRefresh and (not FIsRefreshing) and (Assigned(FOnRefresh) or Assigned(FOnPageFetch)) and (FScrollY <= -50) then
+      if FEnablePullRefresh and (not FIsLoading) and (not FIsLoadingMore) and (not FIsRefreshing) and (Assigned(FOnRefresh) or Assigned(FOnPageFetch)) and (FScrollY <= -50) then
       begin
         FIsRefreshing := True;
         FTargetPageIndex := 1;
